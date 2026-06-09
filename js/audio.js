@@ -1,9 +1,8 @@
 'use strict';
-// audio.js — WebAudio synth sound effects + ambient drone, no audio assets (global Sfx)
+// audio.js — WebAudio synth sound effects + generative pirate shanty, no audio assets (global Sfx)
 
 const Sfx = (() => {
   let ctx = null, master = null, noiseBuf = null;
-  let ambTimer = null, ambNext = 0, ambStep = 0;
   const api = { muted: false };
 
   function init() {
@@ -18,7 +17,7 @@ const Sfx = (() => {
       noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
       const d = noiseBuf.getChannelData(0);
       for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
-      startAmbient();
+      startMusic();
     }
     if (ctx.state === 'suspended') ctx.resume();
   }
@@ -53,26 +52,68 @@ const Sfx = (() => {
     src.start(t0); src.stop(t0 + o.t + 0.05);
   }
 
-  // quiet generative ambient: slow bass pulse + sparse high blips
-  const SCALE = [55, 65.41, 73.42, 82.41, 98];
-  function startAmbient() {
-    if (ambTimer) return;
-    ambTimer = setInterval(() => {
-      if (!ctx || api.muted || ctx.state !== 'running') return;
-      const ahead = ctx.currentTime + 0.6;
-      while (ambNext < ahead) {
-        if (ambNext < ctx.currentTime) ambNext = ctx.currentTime + 0.1;
-        const dly = ambNext - ctx.currentTime;
-        const f = SCALE[[0, 2, 1, 3][ambStep % 4]];
-        tone({ type: 'sine', f0: f, f1: f * 0.5, t: 1.8, vol: 0.05, delay: dly });
-        tone({ type: 'triangle', f0: f * 2, t: 1.2, vol: 0.02, delay: dly });
-        if (Math.random() < 0.3) {
-          tone({ type: 'sine', f0: U.pick([523, 659, 784, 880]), f1: 200, t: 0.8, vol: 0.018, delay: dly + Math.random() });
-        }
-        ambNext += 2.0; ambStep++;
-      }
-    }, 300);
+  // ── THE SHANTY ──────────────────────────────────────────────
+  // An original 8-bar jig in A minor, 6/8 time (~125 bpm dotted feel).
+  // Square-wave lead doubled an octave down, triangle bass with a fifth,
+  // kick on the big beats, snare answer, shaker on every eighth.
+  const N = { E4: 329.63, G4: 392.0, A4: 440.0, B4: 493.88, C5: 523.25, D5: 587.33 };
+  const HOLD = -1, REST = 0;
+  const MELODY = [ // 8 bars x 6 eighths
+    N.A4, N.A4, N.A4, N.C5, N.B4, N.C5,
+    N.A4, HOLD, HOLD, N.E4, HOLD, HOLD,
+    N.G4, N.G4, N.G4, N.B4, N.A4, N.B4,
+    N.G4, HOLD, HOLD, N.E4, HOLD, HOLD,
+    N.A4, N.A4, N.A4, N.C5, N.B4, N.C5,
+    N.D5, HOLD, N.C5, N.B4, HOLD, N.A4,
+    N.G4, N.E4, N.G4, N.A4, N.B4, N.C5,
+    N.A4, HOLD, HOLD, REST, N.E4, N.G4,
+  ];
+  const BASS = [110, 110, 98, 82.41, 110, 87.31, 98, 110]; // root per bar: A A G E / A F G A
+  const STEP = 0.16; // seconds per eighth note
+  let musTimer = null, musNext = 0, musStep = 0;
+
+  function scheduleStep(i, when) {
+    const dly = when - ctx.currentTime;
+    const beat = i % 6, bar = (i / 6) | 0;
+    // lead
+    const f = MELODY[i];
+    if (f > 0) {
+      let dur = 1, j = i + 1;
+      while (MELODY[j % MELODY.length] === HOLD && dur < 6) { dur++; j++; }
+      const t = dur * STEP * 0.92;
+      tone({ type: 'square', f0: f, t, vol: 0.045, delay: dly });
+      tone({ type: 'triangle', f0: f / 2, t, vol: 0.028, delay: dly });
+    }
+    // bass + fifth on the two big beats of the bar
+    if (beat === 0 || beat === 3) {
+      const b = BASS[bar];
+      tone({ type: 'triangle', f0: b, t: 0.3, vol: 0.06, delay: dly });
+      tone({ type: 'sine', f0: b * 1.5, t: 0.22, vol: 0.02, delay: dly });
+    }
+    // percussion: kick / snare / shaker
+    if (beat === 0) tone({ type: 'sine', f0: 150, f1: 50, t: 0.12, vol: 0.11, delay: dly });
+    if (beat === 3) {
+      tone({ type: 'sine', f0: 130, f1: 50, t: 0.1, vol: 0.07, delay: dly });
+      burst({ f0: 1800, f1: 400, t: 0.09, vol: 0.05, delay: dly });
+    }
+    burst({ fType: 'highpass', f0: 5500, f1: 7500, t: 0.03, vol: beat === 0 || beat === 3 ? 0.022 : 0.013, delay: dly });
   }
+
+  function startMusic() {
+    if (musTimer) return;
+    musTimer = setInterval(() => {
+      if (!ctx || api.muted || ctx.state !== 'running') return;
+      const ahead = ctx.currentTime + 0.7;
+      if (musNext < ctx.currentTime) musNext = ctx.currentTime + 0.05;
+      while (musNext < ahead) {
+        scheduleStep(musStep % MELODY.length, musNext);
+        musNext += STEP;
+        musStep++;
+      }
+    }, 200);
+  }
+
+  // ── sound effects ───────────────────────────────────────────
 
   api.init = init;
   api.toggleMute = () => {
@@ -83,24 +124,34 @@ const Sfx = (() => {
 
   api.shoot = (kind) => {
     switch (kind) {
-      case 'pulse': tone({ type: 'square', f0: 880, f1: 240, t: 0.09, vol: 0.07 }); break;
-      case 'repeater': tone({ type: 'square', f0: 660, f1: 330, t: 0.06, vol: 0.05 }); break;
-      case 'scatter':
-        burst({ f0: 2400, f1: 300, t: 0.18, vol: 0.18 });
-        tone({ type: 'square', f0: 300, f1: 120, t: 0.15, vol: 0.1 });
+      case 'flintlock': // sharp black-powder crack + thump
+        burst({ f0: 2500, f1: 300, t: 0.18, vol: 0.26 });
+        tone({ type: 'sine', f0: 150, f1: 50, t: 0.14, vol: 0.18 });
         break;
-      case 'rail':
-        tone({ type: 'sawtooth', f0: 1600, f1: 100, t: 0.3, vol: 0.14 });
-        burst({ f0: 4000, f1: 500, t: 0.2, vol: 0.12 });
+      case 'dualflint':
+        burst({ f0: 2200, f1: 350, t: 0.13, vol: 0.18 });
+        tone({ type: 'sine', f0: 160, f1: 60, t: 0.1, vol: 0.12 });
         break;
-      case 'nova':
-        tone({ type: 'sine', f0: 220, f1: 60, t: 0.3, vol: 0.25 });
-        burst({ f0: 900, f1: 200, t: 0.2, vol: 0.12 });
+      case 'blunderbuss': // roaring scattergun
+        burst({ f0: 1200, f1: 80, t: 0.4, vol: 0.42 });
+        tone({ type: 'sine', f0: 100, f1: 35, t: 0.3, vol: 0.26 });
         break;
-      default: tone({ type: 'square', f0: 700, f1: 300, t: 0.08, vol: 0.06 });
+      case 'musket': // long rifle crack with ring
+        burst({ f0: 3500, f1: 200, t: 0.25, vol: 0.3 });
+        tone({ type: 'sawtooth', f0: 1200, f1: 150, t: 0.2, vol: 0.1 });
+        break;
+      case 'mortar': // hollow thoomp
+        tone({ type: 'sine', f0: 180, f1: 50, t: 0.35, vol: 0.3 });
+        burst({ f0: 700, f1: 120, t: 0.25, vol: 0.16 });
+        break;
+      case 'sword': // steel whoosh
+        burst({ fType: 'highpass', f0: 800, f1: 4000, t: 0.12, vol: 0.13 });
+        break;
+      default:
+        tone({ type: 'square', f0: 700, f1: 300, t: 0.08, vol: 0.06 });
     }
   };
-  api.eshoot = () => tone({ type: 'triangle', f0: 340, f1: 160, t: 0.12, vol: 0.045 });
+  api.eshoot = () => burst({ fType: 'highpass', f0: 1200, f1: 2600, t: 0.06, vol: 0.06 }); // dart pft
   api.hit = () => tone({ type: 'square', f0: 220, f1: 160, t: 0.05, vol: 0.05 });
   api.die = () => {
     burst({ f0: 1200, f1: 100, t: 0.25, vol: 0.22 });
@@ -120,16 +171,17 @@ const Sfx = (() => {
   };
   api.weaponGet = () => [440, 587, 880, 1174].forEach((f, i) =>
     tone({ type: 'square', f0: f, t: 0.12, vol: 0.08, delay: i * 0.09 }));
-  api.gate = () => {
-    tone({ type: 'square', f0: 90, t: 0.25, vol: 0.2 });
-    burst({ f0: 300, f1: 80, t: 0.25, vol: 0.18 });
+  api.gate = () => { // vines lashing shut
+    burst({ f0: 500, f1: 90, t: 0.3, vol: 0.2 });
+    tone({ type: 'square', f0: 90, t: 0.22, vol: 0.16 });
   };
   api.unlock = () => [392, 523, 659].forEach((f, i) =>
     tone({ type: 'triangle', f0: f, t: 0.12, vol: 0.07, delay: i * 0.08 }));
   api.dash = () => burst({ fType: 'highpass', f0: 300, f1: 2000, t: 0.16, vol: 0.1 });
-  api.teleport = () => {
-    tone({ type: 'sine', f0: 200, f1: 1400, t: 0.6, vol: 0.12 });
-    tone({ type: 'sine', f0: 100, f1: 700, t: 0.6, vol: 0.08, delay: 0.05 });
+  api.teleport = () => { // digging
+    burst({ f0: 600, f1: 150, t: 0.18, vol: 0.18 });
+    burst({ f0: 500, f1: 120, t: 0.18, vol: 0.16, delay: 0.22 });
+    tone({ type: 'sine', f0: 200, f1: 700, t: 0.5, vol: 0.07, delay: 0.1 });
   };
   api.deplete = () => tone({ type: 'square', f0: 200, f1: 90, t: 0.2, vol: 0.1 });
   api.crate = () => burst({ f0: 700, f1: 150, t: 0.18, vol: 0.16 });

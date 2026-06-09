@@ -242,17 +242,39 @@ console.log('bullet bounce off walls...');
   assert(G.pBullets.length === 0, 'bounced bullet eventually expires');
 }
 
-console.log('splitter splits on death...');
+console.log('brood python hatches on death...');
 {
   const room = G.level.rooms[0];
   const before = G.enemies.length;
-  const sp = Ent.spawn(G, 'splitter', room.cx + 64, room.cy, room.idx);
+  const sp = Ent.spawn(G, 'brood', room.cx + 64, room.cy, room.idx);
   sp.warp = 0;
   Ent.damageEnemy(G, sp, 1e9);
   pump(2);
-  assert(G.enemies.filter((e) => e.kind === 'skitter' && !e.dead).length >= 2,
-    'splitter spawned skitters (enemies before=' + before + ')');
+  assert(G.enemies.filter((e) => e.kind === 'viper' && !e.dead).length >= 2,
+    'brood hatched vipers (enemies before=' + before + ')');
   for (const e of G.enemies) Ent.damageEnemy(G, e, 1e9); // clean up
+  pump(2);
+}
+
+console.log('sword slash...');
+{
+  const p = G.player;
+  p.x = G.level.rooms[0].cx;
+  p.y = G.level.rooms[0].cy;
+  p.invuln = 9;
+  const swordIdx = p.guns.findIndex((g) => g.id === 'sword');
+  assert(swordIdx >= 0, 'player starts with the rusty sword');
+  p.gunIndex = swordIdx;
+  const v = Ent.spawn(G, 'viper', p.x + 30, p.y, 0); // in slash range, toward mouse-right
+  v.warp = 0; v.spd = 0;
+  mouse('mousemove', 1000, 360); // aim right
+  const kills = G.kills;
+  mouse('mousedown');
+  pump(40); // a few swings at 1 dmg vs 2 hp
+  mouse('mouseup');
+  assert(G.kills > kills, 'sword swings killed the viper');
+  p.gunIndex = 0;
+  for (const e of G.enemies) Ent.damageEnemy(G, e, 1e9);
   pump(2);
 }
 

@@ -1,12 +1,13 @@
-# VOIDRUNNER
+# BLACKPOWDER ISLE
 
-A sci-fi web roguelike, loosely in the spirit of *Enter the Gungeon* (twin-stick
-rooms that lock down, dodge-dash with i-frames, bullet patterns, a boss every few
-floors) and *Tiny Rogue* (compact procedurally generated floors, quick runs,
-simple pickups). Pure HTML5 canvas + vanilla JavaScript — no build step, no
-dependencies, no assets (graphics are drawn, sounds are synthesized with WebAudio).
-
-![genre](https://img.shields.io/badge/genre-roguelike-blueviolet) ![tech](https://img.shields.io/badge/tech-vanilla%20JS%20%2B%20canvas-22d3ee)
+A pirate roguelike on a snake-infested jungle island, loosely in the spirit of
+*Enter the Gungeon* (twin-stick rooms that lock down, dodge-roll with i-frames,
+bullet patterns, a boss every few isles), *Tiny Rogue* (compact procedurally
+generated floors, quick runs), and *The Binding of Isaac* (stat-upgrade items
+after clearing rooms). Pure HTML5 canvas + vanilla JavaScript — no build step,
+no dependencies. Graphics are drawn in code (plus the pixel-art pirate sprite in
+`A_swashbuckling_pirate_standing_top/`), and all audio — including the sea
+shanty — is synthesized live with WebAudio.
 
 ## Play
 
@@ -22,66 +23,77 @@ python3 -m http.server 8000   # then visit http://localhost:8000
 | --- | --- |
 | `WASD` | move |
 | mouse | aim |
-| left mouse (hold) | fire |
-| `Shift` / `Space` | dash — brief invulnerability, short cooldown |
-| `Q` / wheel / `1`–`5` | swap weapon |
+| left mouse (hold) | fire / slash |
+| `Shift` / `Space` | dive roll — brief invulnerability, short cooldown |
+| `Q` / wheel / `1`–`6` | swap weapon |
 | `P` / `Esc` | pause |
 | `M` | mute |
 
-## The run
+## The voyage
 
-- Each **sector** (floor) is a procedurally generated deck of rooms joined by
-  corridors. Entering a hostile room seals the doors with energy gates until
-  every enemy is destroyed.
-- Find the **teleporter pad** and stand on it to descend. Sectors get harder
-  forever; your score is how deep you get and how many credits you bank.
-- One room per sector holds a **weapon pedestal** (scatter laser, plasma
-  repeater, railgun, nova launcher). Energy cells refill special-weapon ammo;
-  the pulse blaster never runs dry.
-- Clearing a room has a chance to leave a **stat upgrade item** (Binding of
-  Isaac-style) on a glowing pedestal ring — these stack for the whole run:
+- Each **isle** is a procedurally generated tangle of jungle clearings joined by
+  dirt trails, surrounded by open sea. Entering a hostile clearing snares the
+  exits shut with **thorned vines** until every beast is slain.
+- Find the **X**, stand on it, and dig down to the next isle. It gets harder
+  forever; your legend is how deep you delve and how much gold you bank.
+- You come ashore with a **flintlock pistol** (slow to reload, hits hard) and a
+  **rusty sword** (low damage, fast swings — slashes in an arc and can *parry
+  incoming darts*).
+- One clearing per isle holds a **treasure chest** with a new gun: the
+  **blunderbuss** (a roaring scattergun), **dual flintlocks** (a faster-reloading
+  pair), the **long musket** (slow, piercing), or the **hand mortar** (explosive
+  grenado). Powder kegs refill ammo; the starting pistol and sword never run dry.
+- Clearing a room has a chance to leave a **stat treasure** (Isaac-style) — these
+  stack for the whole run:
 
   | Item | Effect |
   | --- | --- |
-  | Overclock Chip | +15% fire rate |
-  | Servo Actuators | +12% move speed |
-  | Flux Dash Core | −15% dash cooldown |
-  | Phase Rounds | shots pierce +1 enemy |
-  | Ricochet Plating | shots bounce off +1 wall |
-  | Nano-Hull Weave | +1 max hull, +1 repair |
+  | Paper Cartridges | +15% fire rate |
+  | Sea Legs | +12% move speed |
+  | Acrobat's Sash | −15% roll cooldown |
+  | Chain Shot | shots pierce +1 enemy |
+  | Skipping Shot | shots bounce off +1 wall |
+  | Heart of Oak | +1 max health, +1 swig |
 
-- Every **3rd sector** is guarded by the **WARDEN**, a bullet-hell boss with
-  telegraphed radial, spiral, and shotgun patterns. Killing it permanently
-  reinforces your hull (+1 max HP) and always drops a stat upgrade.
-- Crates are destructible cover and sometimes drop loot. Medbays, hearts,
-  credits, and room-clear bonuses round out the economy. Death is permanent;
-  your best run is kept in `localStorage`.
+- Every **3rd isle** is guarded by the **TIKI COLOSSUS**, a stone bullet-hell
+  boss with telegraphed ember rings, spirals, and dart volleys. Felling it
+  permanently toughens you (+1 max health) and always drops a stat treasure.
+- Rum bottles heal, doubloons are score, crates are destructible cover with
+  loot. Death is permanent; your best voyage is kept in `localStorage`.
 
-### Enemies
+### Bestiary
 
-| Enemy | Behavior |
+| Creature | Behavior |
 | --- | --- |
-| Skitter | fast melee chaser, weaves |
-| Drone | hovers at range, aimed single shots |
-| Sentry turret | stationary, tracking burst fire |
-| Charger | telegraphs, then rams in a straight line; stunned if it hits a wall |
-| Gunner | heavy walker, fan volleys |
-| Splitter | lumbering blob that bursts into two skitters on death |
-| Orbiter | circles you, radial bullet rings |
-| Sniper | keeps its distance, visible lock-on laser, fast precise shot |
-| Warden | sector boss, multi-pattern bullet hell, summons escorts when enraged |
+| Viper | fast snake, weaves as it slithers |
+| Dart tribesman | keeps range, single aimed blowgun darts |
+| Totem | carved sentinel, tracking dart bursts |
+| Constrictor | coils up, then strikes in a straight line; dazed if it hits a tree |
+| Hunter | shielded brute, hurls fans of javelins |
+| Brood python | egg-swollen; hatches two vipers when killed |
+| Shaman | circles you, casts rings of cursed bolts |
+| Headhunter | distant blowgunner with a visible aim line and a fast precise dart |
+| Tiki Colossus | isle boss: multi-pattern bullet hell, summons beasts when cracked |
+
+## The shanty
+
+The background music is an original 8-bar jig in A minor (6/8 time), sequenced
+and synthesized entirely in WebAudio: square-wave lead doubled an octave down,
+triangle bass with a fifth, kick/snare/shaker percussion. No audio files. See
+`js/audio.js`.
 
 ## Code layout
 
 ```
 index.html        canvas + script tags (plain scripts, file:// friendly)
 js/utils.js       math helpers, hashing, RNG conveniences
-js/audio.js       WebAudio sfx synth + generative ambient drone
+js/audio.js       WebAudio sfx synth + the generative sea shanty
 js/input.js       keyboard/mouse state
-js/weapons.js     weapon definitions
-js/map.js         procedural deck generation, tiles, gates, collision
-js/entities.js    enemy AI + boss, damage/loot, pickups, particles, drawing
+js/weapons.js     weapon definitions (incl. melee sword)
+js/map.js         procedural isle generation, tiles, vine gates, collision
+js/entities.js    enemy AI + boss, items, damage/loot, pickups, drawing
 js/game.js        main loop, player, combat, rooms, rendering, HUD, menus
+A_swashbuckling_pirate_standing_top/  player sprite (8 rotations)
 ```
 
 ## Tests
@@ -96,5 +108,5 @@ browsers live elsewhere) and saves screenshots to `test/shots/`.
 
 ## Ideas for later
 
-Shops to spend credits, more weapons/bosses, character upgrades between runs,
-gamepad + touch support, daily seeded runs.
+A shop to spend gold, more guns/bosses, cannons, parrots, gamepad + touch
+support, daily seeded voyages.

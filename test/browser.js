@@ -79,7 +79,7 @@ const server = http.createServer((req, res) => {
     const r = G.level.rooms[0];
     G.player.x = r.cx;
     G.player.y = r.cy + 70;
-    const kinds = ['skitter', 'drone', 'turret', 'charger', 'gunner', 'splitter', 'orbiter', 'sniper'];
+    const kinds = ['viper', 'tribesman', 'totem', 'constrictor', 'hunter', 'brood', 'shaman', 'headhunter'];
     kinds.forEach((k, i) => {
       const e = Ent.spawn(G, k, r.cx - 160 + i * 46, r.cy - 60, r.idx);
       e.warp = 0;

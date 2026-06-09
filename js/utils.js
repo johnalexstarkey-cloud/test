@@ -8,6 +8,13 @@ const U = {
   lerp: (a, b, t) => a + (b - a) * t,
   dist: (x0, y0, x1, y1) => Math.hypot(x1 - x0, y1 - y0),
   ang: (x0, y0, x1, y1) => Math.atan2(y1 - y0, x1 - x0),
+  // smallest signed difference between two angles, in [-PI, PI]
+  adiff(a, b) {
+    let d = a - b;
+    while (d > Math.PI) d -= TAU;
+    while (d < -Math.PI) d += TAU;
+    return d;
+  },
   // rand() -> [0,1), rand(a) -> [0,a), rand(a,b) -> [a,b)
   rand: (a = 1, b) => (b === undefined ? Math.random() * a : a + Math.random() * (b - a)),
   // random integer in [a, b] inclusive
