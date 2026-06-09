@@ -10,7 +10,7 @@ const TILE = 32;
 const T_VOID = 0, T_FLOOR = 1, T_WALL = 2, T_CRATE = 3, T_EXIT = 4;
 
 const MapGen = (() => {
-  const CW = 22, CH = 16; // abstract layout cell size, in tiles
+  const CW = 28, CH = 20; // abstract layout cell size, in tiles
   const PAD = 2;          // tile padding around the whole map
 
   function generate(floor) {
@@ -95,10 +95,10 @@ const MapGen = (() => {
 
       let w, h;
       if (type === 'boss') { w = CW - 4; h = CH - 4; }
-      else if (type === 'start') { w = 11; h = 9; }
-      else if (type === 'treasure' || type === 'medbay') { w = 9; h = 8; }
-      else if (type === 'exit') { w = 10; h = 9; }
-      else { w = U.ri(11, CW - 5); h = U.ri(9, CH - 4); }
+      else if (type === 'start') { w = 12; h = 9; }
+      else if (type === 'treasure' || type === 'medbay') { w = 10; h = 8; }
+      else if (type === 'exit') { w = 11; h = 9; }
+      else { w = U.ri(14, CW - 6); h = U.ri(11, CH - 5); }
 
       // place so the room's floor always covers cell-center ±1 in both axes
       // (guarantees the 3-wide centerline corridors land on floor)
@@ -189,7 +189,7 @@ const MapGen = (() => {
     const crates = new Map(); // "tx,ty" -> hp
     for (const r of rooms) {
       if (r.type !== 'combat') continue;
-      const n = U.ri(2, 5);
+      const n = U.ri(3, 7);
       for (let i = 0; i < n; i++) {
         for (let t = 0; t < 30; t++) {
           const tx = U.ri(r.x + 2, r.x + r.w - 3), ty = U.ri(r.y + 2, r.y + r.h - 3);
@@ -219,8 +219,14 @@ const MapGen = (() => {
     }
     const spawn = { x: rooms[0].cx, y: rooms[0].cy };
 
+    // per-tile room ownership (for floor tinting; -1 = corridor)
+    const roomOf = new Int16Array(W * H).fill(-1);
+    for (const r of rooms)
+      for (let ty = r.y; ty < r.y + r.h; ty++)
+        for (let tx = r.x; tx < r.x + r.w; tx++) roomOf[ty * W + tx] = r.idx;
+
     return {
-      grid, W, H, rooms, edges, gateMap, crates,
+      grid, W, H, rooms, edges, gateMap, crates, roomOf,
       spawn, padCenter, pedestal, medkits,
       exitIdx, treasureIdx, floor, isBoss,
     };

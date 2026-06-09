@@ -72,6 +72,29 @@ const server = http.createServer((req, res) => {
   await page.waitForTimeout(2400);
   await page.screenshot({ path: path.join(shots, '4-boss.png') });
 
+  // art showcase: one of each enemy + all stat items in the start room
+  await page.evaluate(() => {
+    const { G, loadFloor } = window.Game;
+    loadFloor(1);
+    const r = G.level.rooms[0];
+    G.player.x = r.cx;
+    G.player.y = r.cy + 70;
+    const kinds = ['skitter', 'drone', 'turret', 'charger', 'gunner', 'splitter', 'orbiter', 'sniper'];
+    kinds.forEach((k, i) => {
+      const e = Ent.spawn(G, k, r.cx - 160 + i * 46, r.cy - 60, r.idx);
+      e.warp = 0;
+      e.spd = 0; // hold still for the photo
+      e.fireCD = 99;
+    });
+    Ent.ITEM_IDS.forEach((id, i) => {
+      Ent.spawnPickup(G, r.cx - 115 + i * 46, r.cy + 10, 'item', id);
+    });
+    G.banner = null;
+  });
+  await page.mouse.move(640, 200);
+  await page.waitForTimeout(700);
+  await page.screenshot({ path: path.join(shots, '5-showcase.png') });
+
   const state = await page.evaluate(() => ({
     state: window.Game.G.state,
     floor: window.Game.G.floor,

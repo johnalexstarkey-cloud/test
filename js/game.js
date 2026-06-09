@@ -44,8 +44,11 @@ function newRun() {
   G.floor = 1; G.credits = 0; G.kills = 0; G.runTime = 0; G.newBest = false;
   G.player = {
     x: 0, y: 0, r: 11, hp: 6, maxHp: 6, spd: 235,
-    dashT: 0, dashCD: 0, dashDX: 1, dashDY: 0, invuln: 0, fireCD: 0,
+    dashT: 0, dashCD: 0, dashCDMax: 0.95, dashDX: 1, dashDY: 0, invuln: 0, fireCD: 0,
     guns: [makeGun('pulse')], gunIndex: 0, aimAng: 0,
+    moving: false, moveAng: 0,
+    stats: { fireRate: 1, speed: 1, dashCD: 1, pierce: 0, bounce: 0 },
+    itemCounts: {},
   };
   G.weaponQueue = U.shuffle(WEAPON_POOL);
   loadFloor(1);
@@ -141,7 +144,9 @@ function updatePlayer(dt) {
   p.aimAng = Math.atan2(wm.y - p.y, wm.x - p.x);
 
   if ((Input.hit('ShiftLeft') || Input.hit('ShiftRight') || Input.hit('Space')) && p.dashCD <= 0) {
-    p.dashT = 0.22; p.dashCD = 0.95;
+    p.dashT = 0.22;
+    p.dashCDMax = 0.95 * p.stats.dashCD;
+    p.dashCD = p.dashCDMax;
     if (il > 0) { p.dashDX = ix; p.dashDY = iy; }
     else { p.dashDX = Math.cos(p.aimAng); p.dashDY = Math.sin(p.aimAng); }
     p.invuln = Math.max(p.invuln, 0.3);
@@ -155,8 +160,11 @@ function updatePlayer(dt) {
     G.trail.push({ x: p.x, y: p.y, t: 0.22 });
     if (G.trail.length > 24) G.trail.shift();
   } else {
-    vx = ix * p.spd; vy = iy * p.spd;
+    const spd = p.spd * p.stats.speed;
+    vx = ix * spd; vy = iy * spd;
   }
+  p.moving = vx !== 0 || vy !== 0;
+  if (p.moving) p.moveAng = Math.atan2(vy, vx);
   MapGen.moveEntity(G.level, p, vx * dt, vy * dt);
 
   // weapon switching: Q / wheel / number keys
@@ -175,16 +183,18 @@ function updatePlayer(dt) {
     if (gun.ammo <= 0) {
       p.fireCD = 0.3; Sfx.click();
     } else {
-      p.fireCD = 1 / W.rate;
+      p.fireCD = 1 / (W.rate * p.stats.fireRate);
       const mzx = p.x + Math.cos(p.aimAng) * (p.r + 8);
       const mzy = p.y + Math.sin(p.aimAng) * (p.r + 8);
+      const pierceLeft = (W.pierce || 0) + p.stats.pierce;
       for (let i = 0; i < W.pellets; i++) {
         const a = p.aimAng + U.rand(-W.spread, W.spread);
         G.pBullets.push({
           x: mzx, y: mzy, vx: Math.cos(a) * W.spd, vy: Math.sin(a) * W.spd,
           dmg: W.dmg, r: W.size, life: W.life, color: W.color,
-          pierce: !!W.pierce, boom: W.boom || 0, boomDmg: W.boomDmg || 0,
-          hit: W.pierce ? new Set() : null, dead: false,
+          pierceLeft, bounceLeft: p.stats.bounce,
+          rail: !!W.pierce, boom: W.boom || 0, boomDmg: W.boomDmg || 0,
+          hit: pierceLeft > 0 ? new Set() : null, dead: false,
         });
       }
       Ent.burst(G, mzx, mzy, W.color, 3, 90, 0.15, 2);
@@ -258,7 +268,11 @@ function roomsLogic() {
       Sfx.unlock();
       for (const b of G.eBullets) Ent.burst(G, b.x, b.y, '#94a3b8', 2, 60, 0.25, 2);
       G.eBullets.length = 0;
-      if (r.type !== 'boss' && U.chance(0.55)) Ent.dropLoot(G, r.cx, r.cy, 'room');
+      if (r.type !== 'boss') { // Isaac-style clear reward: sometimes a stat upgrade
+        const roll = Math.random();
+        if (roll < 0.28) Ent.spawnPickup(G, r.cx, r.cy, 'item', U.pick(Ent.ITEM_IDS));
+        else if (roll < 0.72) Ent.dropLoot(G, r.cx, r.cy, 'room');
+      }
     }
   }
 }
@@ -273,13 +287,15 @@ function lockRoom(room) {
     G.boss = e;
     Ent.showBanner(G, 'THE WARDEN', 'sector guardian — destroy it');
   } else {
-    let budget = 3 + Math.round(G.floor * 1.5);
+    let budget = 4 + Math.round(G.floor * 1.9);
     const kinds = ['skitter', 'drone'];
     if (G.floor >= 2) kinds.push('turret');
-    if (G.floor >= 3) kinds.push('gunner');
-    if (G.floor >= 4) kinds.push('orbiter', 'skitter');
-    let n = 0, guard = 60;
-    while (budget > 0 && n < 10 && guard-- > 0) {
+    if (G.floor >= 3) kinds.push('charger');
+    if (G.floor >= 4) kinds.push('gunner', 'splitter');
+    if (G.floor >= 5) kinds.push('orbiter', 'skitter');
+    if (G.floor >= 6) kinds.push('sniper');
+    let n = 0, guard = 80;
+    while (budget > 0 && n < 13 && guard-- > 0) {
       const k = U.pick(kinds);
       const def = Ent.ENEMY_DEFS[k];
       if (def.cost > budget && n >= 2) break;
@@ -303,6 +319,7 @@ function updatePBullets(dt) {
     if (b.life <= 0) { b.dead = true; continue; }
     const steps = Math.max(1, Math.ceil((Math.hypot(b.vx, b.vy) * dt) / 12));
     for (let s = 0; s < steps && !b.dead; s++) {
+      const sox = b.x, soy = b.y;
       b.x += (b.vx * dt) / steps;
       b.y += (b.vy * dt) / steps;
       const tx = Math.floor(b.x / TILE), ty = Math.floor(b.y / TILE);
@@ -310,9 +327,21 @@ function updatePBullets(dt) {
         if (tx >= 0 && ty >= 0 && tx < lvl.W && ty < lvl.H && lvl.grid[ty * lvl.W + tx] === T_CRATE) {
           Ent.damageCrate(G, tx, ty, Math.max(1, Math.round(b.dmg)));
         }
-        if (b.boom) Ent.boom(G, b.x, b.y, b.boom, b.boomDmg);
-        else Ent.burst(G, b.x, b.y, b.color, 3, 90, 0.2, 2);
-        b.dead = true;
+        if (b.boom) {
+          Ent.boom(G, b.x, b.y, b.boom, b.boomDmg);
+          b.dead = true;
+        } else if (b.bounceLeft > 0) { // ricochet off the wall face that was crossed
+          b.bounceLeft--;
+          const otx = Math.floor(sox / TILE), oty = Math.floor(soy / TILE);
+          if (tx !== otx) b.vx = -b.vx;
+          if (ty !== oty) b.vy = -b.vy;
+          if (tx === otx && ty === oty) { b.vx = -b.vx; b.vy = -b.vy; }
+          b.x = sox; b.y = soy;
+          Ent.burst(G, b.x, b.y, b.color, 2, 80, 0.15, 2);
+        } else {
+          Ent.burst(G, b.x, b.y, b.color, 3, 90, 0.2, 2);
+          b.dead = true;
+        }
         break;
       }
       for (const e of G.enemies) {
@@ -320,7 +349,7 @@ function updatePBullets(dt) {
         const rr = b.r + e.r;
         const ex = e.x - b.x, ey = e.y - b.y;
         if (ex * ex + ey * ey < rr * rr) {
-          if (b.pierce) {
+          if (b.hit) {
             if (b.hit.has(e.id)) continue;
             b.hit.add(e.id);
           }
@@ -330,7 +359,8 @@ function updatePBullets(dt) {
           e.kby += Math.sin(ka) * 90;
           Ent.burst(G, b.x, b.y, b.color, 4, 120, 0.25, 2);
           if (b.boom) { Ent.boom(G, b.x, b.y, b.boom, b.boomDmg); b.dead = true; }
-          else if (!b.pierce) b.dead = true;
+          else if (b.pierceLeft > 0) b.pierceLeft--;
+          else b.dead = true;
           if (b.dead) break;
         }
       }
@@ -398,17 +428,24 @@ function updatePickups(dt) {
     pk.vx *= Math.exp(-4 * dt); pk.vy *= Math.exp(-4 * dt);
     const skipHeart = pk.kind === 'heart' && p.hp >= p.maxHp;
     const d = U.dist(pk.x, pk.y, p.x, p.y);
-    const magnet = pk.kind === 'credit' ? 130 : 90;
+    const magnet = pk.kind === 'item' ? 0 : pk.kind === 'credit' ? 130 : 90;
     if (!skipHeart && d < magnet && G.state === 'play') {
       const a = U.ang(pk.x, pk.y, p.x, p.y);
       const pull = 380 * (1 - d / magnet) + 60;
       pk.x += Math.cos(a) * pull * dt;
       pk.y += Math.sin(a) * pull * dt;
     }
-    if (!skipHeart && d < p.r + 10) {
+    if (!skipHeart && d < p.r + (pk.kind === 'item' ? 16 : 10)) {
       pk.dead = true;
       Sfx.pickup();
-      if (pk.kind === 'credit') {
+      if (pk.kind === 'item') {
+        const it = Ent.ITEMS[pk.val];
+        it.apply(p);
+        p.itemCounts[pk.val] = (p.itemCounts[pk.val] || 0) + 1;
+        Sfx.weaponGet();
+        Ent.showBanner(G, it.name, it.desc);
+        Ent.burst(G, pk.x, pk.y, it.color, 16, 160, 0.5, 3);
+      } else if (pk.kind === 'credit') {
         G.credits += pk.val;
         Ent.addText(G, pk.x, pk.y - 10, '+' + pk.val + '¢', '#fbbf24', 12);
       } else if (pk.kind === 'cell') {
@@ -573,6 +610,11 @@ function drawStars() {
   ctx.globalAlpha = 1;
 }
 
+const FLOOR_TINT = { // subtle per-room-type deck coloring
+  start: '#0e1322', combat: '#0d111b', treasure: '#15110a',
+  medbay: '#0b1410', exit: '#120d1f', boss: '#140d20',
+};
+
 function drawTiles() {
   const lvl = G.level;
   const tx0 = Math.max(0, Math.floor(G.cam.x / TILE) - 1);
@@ -585,7 +627,9 @@ function drawTiles() {
       const px = tx * TILE, py = ty * TILE;
       if (v === T_FLOOR || v === T_EXIT || v === T_CRATE) {
         const h = U.hash2(tx, ty);
-        ctx.fillStyle = h < 0.1 ? '#0a0e16' : '#0d111b';
+        const ri = lvl.roomOf[ty * lvl.W + tx];
+        const base = ri >= 0 ? (FLOOR_TINT[lvl.rooms[ri].type] || '#0d111b') : '#0b0d13';
+        ctx.fillStyle = h < 0.1 ? '#0a0e16' : base;
         ctx.fillRect(px, py, TILE, TILE);
         ctx.fillStyle = '#0a0d14'; // panel seams
         ctx.fillRect(px + TILE - 1, py, 1, TILE);
@@ -740,7 +784,7 @@ function drawBullets() {
     ctx.fillStyle = b.color;
     ctx.beginPath(); ctx.arc(b.x, b.y, b.r * 2.2, 0, TAU); ctx.fill();
     ctx.globalAlpha = 1;
-    if (b.pierce) { // rail slug: elongated streak
+    if (b.rail) { // rail slug: elongated streak
       const a = Math.atan2(b.vy, b.vx);
       ctx.strokeStyle = b.color;
       ctx.lineWidth = b.r;
@@ -840,12 +884,23 @@ function drawHUD() {
     ctx.fillText(String(i + 1), x + 6, y + 12);
   }
   ctx.globalAlpha = 1;
+  // collected stat upgrades
+  let ix = 16;
+  for (const id in p.itemCounts) {
+    const it = Ent.ITEMS[id];
+    ctx.fillStyle = it.color;
+    ctx.fillRect(ix, 98, 8, 8);
+    ctx.font = font(11);
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText('x' + p.itemCounts[id], ix + 11, 106);
+    ix += 36;
+  }
   // sector / credits
   ctx.font = font(14);
   ctx.fillStyle = '#7dd3fc';
-  ctx.fillText('SECTOR ' + G.floor, 16, 112);
+  ctx.fillText('SECTOR ' + G.floor, 16, 126);
   ctx.fillStyle = '#fbbf24';
-  ctx.fillText('¢ ' + G.credits, 120, 112);
+  ctx.fillText('¢ ' + G.credits, 130, 126);
   // hints / mute
   ctx.font = font(11, '');
   ctx.fillStyle = '#475569';

@@ -1,15 +1,47 @@
 'use strict';
-// entities.js — enemies (AI + boss), damage, loot, pickups, particles, fx (global Ent)
+// entities.js — enemies (AI + boss), items, damage, loot, pickups, particles, fx (global Ent)
 
 const Ent = (() => {
   const ENEMY_DEFS = {
-    skitter: { hp: 2,   r: 9,  spd: 155, cost: 1, color: '#f87171', credits: [1, 2] },
-    drone:   { hp: 3,   r: 11, spd: 90,  cost: 2, color: '#fb7185', credits: [1, 3] },
-    turret:  { hp: 5,   r: 12, spd: 0,   cost: 2, color: '#f59e0b', credits: [1, 3] },
-    gunner:  { hp: 7,   r: 13, spd: 62,  cost: 3, color: '#e879f9', credits: [2, 4] },
-    orbiter: { hp: 5,   r: 11, spd: 80,  cost: 3, color: '#22d3ee', credits: [2, 4] },
-    warden:  { hp: 130, r: 30, spd: 55,  cost: 0, color: '#a78bfa', credits: [15, 25] },
+    skitter:  { hp: 2,   r: 9,  spd: 155, cost: 1, color: '#f87171', credits: [1, 2] },
+    drone:    { hp: 3,   r: 11, spd: 90,  cost: 2, color: '#fb7185', credits: [1, 3] },
+    turret:   { hp: 5,   r: 12, spd: 0,   cost: 2, color: '#f59e0b', credits: [1, 3] },
+    charger:  { hp: 5,   r: 12, spd: 95,  cost: 3, color: '#f97316', credits: [2, 3] },
+    gunner:   { hp: 7,   r: 13, spd: 62,  cost: 3, color: '#e879f9', credits: [2, 4] },
+    splitter: { hp: 6,   r: 13, spd: 72,  cost: 3, color: '#a3e635', credits: [2, 3] },
+    orbiter:  { hp: 5,   r: 11, spd: 80,  cost: 3, color: '#22d3ee', credits: [2, 4] },
+    sniper:   { hp: 4,   r: 11, spd: 70,  cost: 3, color: '#38bdf8', credits: [2, 4] },
+    warden:   { hp: 130, r: 30, spd: 55,  cost: 0, color: '#a78bfa', credits: [15, 25] },
   };
+
+  // stat-upgrade items (Isaac-style): chance drop on room clear, guaranteed from bosses
+  const ITEMS = {
+    overclock: {
+      name: 'OVERCLOCK CHIP', desc: '+15% fire rate', color: '#fde047',
+      apply: (p) => { p.stats.fireRate += 0.15; },
+    },
+    servo: {
+      name: 'SERVO ACTUATORS', desc: '+12% move speed', color: '#4ade80',
+      apply: (p) => { p.stats.speed += 0.12; },
+    },
+    flux: {
+      name: 'FLUX DASH CORE', desc: '-15% dash cooldown', color: '#22d3ee',
+      apply: (p) => { p.stats.dashCD *= 0.85; },
+    },
+    phase: {
+      name: 'PHASE ROUNDS', desc: 'shots pierce +1 enemy', color: '#c084fc',
+      apply: (p) => { p.stats.pierce += 1; },
+    },
+    ricochet: {
+      name: 'RICOCHET PLATING', desc: 'shots bounce +1 wall', color: '#fb923c',
+      apply: (p) => { p.stats.bounce += 1; },
+    },
+    hull: {
+      name: 'NANO-HULL WEAVE', desc: '+1 max hull, +1 repair', color: '#f87171',
+      apply: (p) => { p.maxHp = Math.min(12, p.maxHp + 1); p.hp = Math.min(p.maxHp, p.hp + 1); },
+    },
+  };
+  const ITEM_IDS = Object.keys(ITEMS);
 
   let nextId = 1;
 
@@ -25,6 +57,7 @@ const Ent = (() => {
       warp: 0.55 + warpDelay, t: U.rand(TAU), flash: 0, tele: 0,
       fireCD: U.rand(0.8, 1.6), kbx: 0, kby: 0,
       aim: U.rand(TAU), face: 0, burst: 0, atk: '', atkT: U.rand(0.6, 1.2),
+      state: 'roam', stT: 0, cdx: 1, cdy: 0, lock: 0,
       dir: U.chance(0.5) ? 1 : -1, dead: false,
     };
     G.enemies.push(e);
@@ -93,6 +126,42 @@ const Ent = (() => {
         }
         break;
       }
+      case 'charger': { // telegraphs, then rams in a straight line
+        if (e.state === 'charge') {
+          const ox = e.x, oy = e.y;
+          MapGen.moveEntity(lvl, e, e.cdx * 520 * dt, e.cdy * 520 * dt);
+          e.stT -= dt;
+          if (U.dist(ox, oy, e.x, e.y) < 520 * dt * 0.35 || e.stT <= 0) { // hit a wall / spent
+            e.state = 'stun'; e.stT = 0.7;
+            burst(G, e.x + e.cdx * e.r, e.y + e.cdy * e.r, e.color, 8, 160, 0.4, 3);
+            G.shake = Math.max(G.shake, 3);
+          }
+          if (U.chance(0.5)) burst(G, e.x - e.cdx * e.r, e.y - e.cdy * e.r, '#fdba74', 1, 40, 0.25, 2);
+          return;
+        }
+        if (e.state === 'stun') {
+          e.stT -= dt;
+          if (e.stT <= 0) e.state = 'roam';
+          break;
+        }
+        if (e.state === 'tele') {
+          e.stT -= dt;
+          if (e.stT <= 0) {
+            e.state = 'charge'; e.stT = 0.85;
+            const a = Math.atan2(uy, ux);
+            e.cdx = Math.cos(a); e.cdy = Math.sin(a); e.face = a;
+            Sfx.dash();
+          }
+          break;
+        }
+        mx = ux * e.spd * 0.7; my = uy * e.spd * 0.7;
+        if (e.fireCD <= 0 && d < 420 && d > 60 && MapGen.raycastClear(lvl, e.x, e.y, p.x, p.y)) {
+          e.state = 'tele'; e.stT = 0.5; e.tele = 0.5;
+          e.face = Math.atan2(uy, ux);
+          e.fireCD = U.rand(2.2, 3.0);
+        }
+        break;
+      }
       case 'gunner': { // heavy walker, fan volleys
         if (d > 215) { mx = ux * e.spd; my = uy * e.spd; }
         else {
@@ -110,7 +179,12 @@ const Ent = (() => {
         }
         break;
       }
-      case 'orbiter': { // circles the player, radial rings
+      case 'splitter': { // lumbering blob, splits into skitters on death
+        const a = Math.atan2(uy, ux) + Math.sin(e.t * 3) * 0.5;
+        mx = Math.cos(a) * e.spd; my = Math.sin(a) * e.spd;
+        break;
+      }
+      case 'orbiter': { // circles the player, radial bullet rings
         const oa = e.t * 0.9 * e.dir;
         const txp = p.x + Math.cos(oa) * 190, typ = p.y + Math.sin(oa) * 190;
         const dd = Math.hypot(txp - e.x, typ - e.y);
@@ -120,6 +194,24 @@ const Ent = (() => {
             eShoot(G, e.x, e.y, (i / 8) * TAU + e.t, 150, { color: '#22d3ee' });
           Sfx.eshoot();
           e.fireCD = U.rand(2.4, 3.0);
+        }
+        break;
+      }
+      case 'sniper': { // keeps far, locks on with a laser, fires a fast precise shot
+        if (d < 300) { mx = -ux * e.spd; my = -uy * e.spd; }
+        else if (d > 480) { mx = ux * e.spd * 0.6; my = uy * e.spd * 0.6; }
+        const los = d < 560 && MapGen.raycastClear(lvl, e.x, e.y, p.x, p.y);
+        if (los && e.fireCD <= 0) {
+          e.lock += dt / 1.1;
+          if (e.lock >= 1) {
+            eShoot(G, e.x + ux * (e.r + 4), e.y + uy * (e.r + 4),
+              Math.atan2(uy, ux), 430, { color: '#38bdf8', r: 3.5 });
+            Sfx.eshoot();
+            e.lock = 0;
+            e.fireCD = U.rand(1.6, 2.2);
+          }
+        } else {
+          e.lock = Math.max(0, e.lock - dt * 2);
         }
         break;
       }
@@ -224,6 +316,11 @@ const Ent = (() => {
       Sfx.die();
       burst(G, e.x, e.y, e.color, 14, 200, 0.55, 3.5);
       burst(G, e.x, e.y, '#ffffff', 6, 120, 0.3, 2);
+      if (e.kind === 'splitter') {
+        spawn(G, 'skitter', e.x - 12, e.y + U.rand(-6, 6), e.roomIdx, 0.05);
+        spawn(G, 'skitter', e.x + 12, e.y + U.rand(-6, 6), e.roomIdx, 0.15);
+        addText(G, e.x, e.y - 14, 'SPLIT!', '#a3e635', 12);
+      }
       if (e.kind === 'warden') onBossDeath(G, e);
       else dropLoot(G, e.x, e.y, 'enemy', e.kind);
     } else {
@@ -243,8 +340,9 @@ const Ent = (() => {
     spawnPickup(G, e.x - 30, e.y, 'heart', 1);
     spawnPickup(G, e.x + 30, e.y, 'heart', 1);
     spawnPickup(G, e.x, e.y - 30, 'cell', 1);
+    spawnPickup(G, e.x, e.y + 34, 'item', U.pick(ITEM_IDS)); // bosses always drop an upgrade
     const p = G.player;
-    p.maxHp = Math.min(10, p.maxHp + 1);
+    p.maxHp = Math.min(12, p.maxHp + 1);
     p.hp = Math.min(p.maxHp, p.hp + 3);
     showBanner(G, 'WARDEN DESTROYED', 'hull reinforced +1 — teleporter online');
     G.boss = null;
@@ -271,7 +369,9 @@ const Ent = (() => {
   function spawnPickup(G, x, y, kind, val = 1) {
     G.pickups.push({
       x, y, kind, val, t: U.rand(TAU),
-      vx: U.rand(-50, 50), vy: U.rand(-50, 50), dead: false,
+      vx: kind === 'item' ? 0 : U.rand(-50, 50),
+      vy: kind === 'item' ? 0 : U.rand(-50, 50),
+      dead: false,
     });
   }
 
@@ -344,7 +444,7 @@ const Ent = (() => {
     G.banner = { str, sub, t: 0, life: 2.8 };
   }
 
-  // ── drawing ──
+  // ════════════════════════ drawing ════════════════════════
 
   function drawEnemy(ctx, G, e) {
     ctx.save();
@@ -370,31 +470,64 @@ const Ent = (() => {
     switch (e.kind) {
       case 'skitter': {
         ctx.rotate(e.face);
-        ctx.fillStyle = '#3a0d0d';
+        ctx.strokeStyle = '#7f1d1d'; // scuttling legs
+        ctx.lineWidth = 1.5;
+        for (let i = 0; i < 3; i++) {
+          const ph = Math.sin(e.t * 16 + i * 2.1) * 3;
+          ctx.beginPath();
+          ctx.moveTo(i * 5 - 6, 5); ctx.lineTo(i * 5 - 9 + ph, 11);
+          ctx.moveTo(i * 5 - 6, -5); ctx.lineTo(i * 5 - 9 - ph, -11);
+          ctx.stroke();
+        }
+        ctx.fillStyle = '#450a0a'; // chitin wedge body
         ctx.strokeStyle = e.color;
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.moveTo(e.r + 3, 0);
-        ctx.lineTo(-e.r * 0.7, e.r * 0.75);
-        ctx.lineTo(-e.r * 0.3, 0);
-        ctx.lineTo(-e.r * 0.7, -e.r * 0.75);
+        ctx.moveTo(e.r + 4, 0);
+        ctx.lineTo(-e.r * 0.6, e.r * 0.65);
+        ctx.lineTo(-e.r * 0.9, 0);
+        ctx.lineTo(-e.r * 0.6, -e.r * 0.65);
         ctx.closePath();
         ctx.fill(); ctx.stroke();
+        ctx.strokeStyle = '#fca5a5'; // mandibles
+        ctx.beginPath();
+        ctx.moveTo(e.r + 1, 2); ctx.lineTo(e.r + 7, 5);
+        ctx.moveTo(e.r + 1, -2); ctx.lineTo(e.r + 7, -5);
+        ctx.stroke();
+        ctx.fillStyle = '#fecaca'; // eye slit
+        ctx.fillRect(0, -1.25, 5.5, 2.5);
         break;
       }
       case 'drone': {
-        ctx.fillStyle = '#3f0f1a';
+        for (let i = 0; i < 4; i++) { // spinning rotor arcs
+          const a = e.t * 5 + (i / 4) * TAU;
+          ctx.strokeStyle = '#fda4af';
+          ctx.globalAlpha = 0.7;
+          ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(0, 0, e.r + 4, a, a + 0.7); ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+        ctx.fillStyle = '#3f0f1a'; // saucer hull
         ctx.strokeStyle = e.color;
         ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(0, 0, e.r, 0, TAU); ctx.fill(); ctx.stroke();
-        for (let i = 0; i < 3; i++) { // spinning rotor stubs
-          const a = e.t * 3 + (i / 3) * TAU;
+        ctx.fillStyle = '#5b1626'; // dome
+        ctx.beginPath(); ctx.arc(0, 0, e.r * 0.55, 0, TAU); ctx.fill();
+        for (let i = 0; i < 3; i++) { // rim running lights
+          const a = e.t * 1.5 + (i / 3) * TAU;
+          ctx.fillStyle = '#fb7185';
           ctx.beginPath();
-          ctx.moveTo(Math.cos(a) * e.r, Math.sin(a) * e.r);
-          ctx.lineTo(Math.cos(a) * (e.r + 5), Math.sin(a) * (e.r + 5));
-          ctx.stroke();
+          ctx.arc(Math.cos(a) * (e.r - 2.5), Math.sin(a) * (e.r - 2.5), 1.5, 0, TAU);
+          ctx.fill();
         }
-        const pa = U.ang(e.x, e.y, G.player.x, G.player.y);
+        ctx.strokeStyle = '#fb7185'; // antenna with blinking tip
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(0, -e.r * 0.55); ctx.lineTo(0, -e.r - 5); ctx.stroke();
+        if (Math.sin(e.t * 6) > 0) {
+          ctx.fillStyle = '#fecdd3';
+          ctx.beginPath(); ctx.arc(0, -e.r - 5, 2, 0, TAU); ctx.fill();
+        }
+        const pa = U.ang(e.x, e.y, G.player.x, G.player.y); // targeting eye
         ctx.fillStyle = '#fda4af';
         ctx.beginPath();
         ctx.arc(Math.cos(pa) * 4, Math.sin(pa) * 4, 3, 0, TAU);
@@ -402,20 +535,85 @@ const Ent = (() => {
         break;
       }
       case 'turret': {
-        ctx.fillStyle = '#3b2503';
+        ctx.fillStyle = '#3b2503'; // octagonal base
         ctx.strokeStyle = e.color;
         ctx.lineWidth = 2;
-        ctx.fillRect(-e.r, -e.r, e.r * 2, e.r * 2);
-        ctx.strokeRect(-e.r, -e.r, e.r * 2, e.r * 2);
+        ctx.beginPath();
+        for (let i = 0; i < 8; i++) {
+          const a = (i / 8) * TAU + Math.PI / 8;
+          const px = Math.cos(a) * (e.r + 2), py = Math.sin(a) * (e.r + 2);
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#92400e'; // corner bolts
+        for (let i = 0; i < 4; i++) {
+          const a = (i / 4) * TAU + Math.PI / 4;
+          ctx.beginPath();
+          ctx.arc(Math.cos(a) * (e.r - 2), Math.sin(a) * (e.r - 2), 1.5, 0, TAU);
+          ctx.fill();
+        }
+        ctx.strokeStyle = '#92400e'; // swivel ring
+        ctx.beginPath(); ctx.arc(0, 0, e.r * 0.65, 0, TAU); ctx.stroke();
+        ctx.save();
         ctx.rotate(e.aim);
+        const recoil = e.burst > 0 && e.fireCD > 0.06 ? -3 : 0;
+        ctx.fillStyle = '#78350f'; // barrel housing
+        ctx.fillRect(2 + recoil, -3.5, e.r + 8, 7);
         ctx.fillStyle = e.color;
-        ctx.fillRect(0, -3, e.r + 8, 6);
-        ctx.fillStyle = '#fde68a';
-        ctx.beginPath(); ctx.arc(0, 0, 4, 0, TAU); ctx.fill();
+        ctx.fillRect(e.r + 7 + recoil, -2.5, 5, 5); // muzzle
+        ctx.fillRect(2 + recoil, -1, e.r + 4, 2);   // rail groove
+        ctx.restore();
+        ctx.fillStyle = e.burst > 0 && Math.sin(e.t * 30) > 0 ? '#fde68a' : '#713f12'; // warning lamp
+        ctx.beginPath(); ctx.arc(0, 0, 3.5, 0, TAU); ctx.fill();
+        break;
+      }
+      case 'charger': {
+        ctx.rotate(e.face);
+        ctx.strokeStyle = '#7c2d12'; // treads with rolling dashes
+        ctx.lineWidth = 4;
+        const roll = (e.t * 30) % 6;
+        for (const side of [-1, 1]) {
+          ctx.beginPath();
+          ctx.moveTo(-e.r, side * (e.r - 2));
+          ctx.lineTo(e.r - 2, side * (e.r - 2));
+          ctx.stroke();
+        }
+        ctx.strokeStyle = '#431407';
+        ctx.lineWidth = 2;
+        for (let x = -e.r + roll; x < e.r - 2; x += 6) {
+          ctx.beginPath();
+          ctx.moveTo(x, e.r - 4); ctx.lineTo(x, e.r);
+          ctx.moveTo(x, -e.r + 4); ctx.lineTo(x, -e.r);
+          ctx.stroke();
+        }
+        ctx.fillStyle = '#431407'; // hull
+        ctx.strokeStyle = e.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(e.r + 2, 0);
+        ctx.lineTo(2, e.r - 3);
+        ctx.lineTo(-e.r, e.r - 5);
+        ctx.lineTo(-e.r, -(e.r - 5));
+        ctx.lineTo(2, -(e.r - 3));
+        ctx.closePath();
+        ctx.fill(); ctx.stroke();
+        const hot = e.state === 'tele' && Math.sin(e.t * 30) > 0; // ram blade, flashes on telegraph
+        ctx.fillStyle = hot ? '#ffffff' : e.state === 'charge' ? '#fdba74' : '#9a3412';
+        ctx.beginPath();
+        ctx.moveTo(e.r + 8, 0);
+        ctx.lineTo(e.r - 2, 6);
+        ctx.lineTo(e.r - 2, -6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = e.state === 'stun' ? '#525252' : '#fdba74'; // engine eye
+        ctx.beginPath(); ctx.arc(-3, 0, 3, 0, TAU); ctx.fill();
         break;
       }
       case 'gunner': {
-        ctx.fillStyle = '#3b0a3d';
+        const bob = Math.sin(e.t * 6) * 1.5;
+        ctx.translate(0, bob);
+        ctx.fillStyle = '#3b0a3d'; // hex chassis
         ctx.strokeStyle = e.color;
         ctx.lineWidth = 2.5;
         ctx.beginPath();
@@ -426,31 +624,134 @@ const Ent = (() => {
         }
         ctx.closePath();
         ctx.fill(); ctx.stroke();
+        ctx.strokeStyle = '#701a75'; // inner plating
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * TAU + Math.PI / 6;
+          const px = Math.cos(a) * e.r * 0.6, py = Math.sin(a) * e.r * 0.6;
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.stroke();
+        ctx.fillStyle = '#701a75'; // shoulder pods
+        ctx.fillRect(-4, -e.r - 4, 8, 5);
+        ctx.fillRect(-4, e.r - 1, 8, 5);
+        ctx.fillStyle = '#f0abfc';
+        ctx.fillRect(2, -e.r - 3, 2, 3);
+        ctx.fillRect(2, e.r + 1, 2, 3);
         const pa = U.ang(e.x, e.y, G.player.x, G.player.y);
         ctx.rotate(pa);
-        ctx.fillStyle = e.color;
-        ctx.fillRect(2, -6, e.r + 4, 3);
-        ctx.fillRect(2, 3, e.r + 4, 3);
+        ctx.fillStyle = e.color; // twin cannons
+        ctx.fillRect(2, -6.5, e.r + 5, 3.5);
+        ctx.fillRect(2, 3, e.r + 5, 3.5);
+        ctx.fillStyle = '#fae8ff';
+        ctx.fillRect(e.r + 4, -6, 3, 2.5);
+        ctx.fillRect(e.r + 4, 3.5, 3, 2.5);
+        ctx.fillStyle = '#f0abfc'; // visor
+        ctx.beginPath(); ctx.arc(3, 0, 3.5, -0.9, 0.9); ctx.fill();
         break;
       }
-      case 'orbiter': {
+      case 'splitter': {
+        const sq = 1 + Math.sin(e.t * 4) * 0.08; // breathing squash
+        ctx.scale(sq, 2 - sq);
+        ctx.globalAlpha = 0.5; // outer membrane
         ctx.strokeStyle = e.color;
-        ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.arc(0, 0, e.r, 0, TAU); ctx.stroke();
-        ctx.fillStyle = '#062a30';
-        ctx.beginPath(); ctx.arc(0, 0, e.r * 0.5, 0, TAU); ctx.fill();
-        ctx.fillStyle = e.color;
-        ctx.beginPath(); ctx.arc(0, 0, 3, 0, TAU); ctx.fill();
-        for (let i = 0; i < 2; i++) {
-          const a = e.t * 4 + i * Math.PI;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(0, 0, e.r + 3, 0, TAU); ctx.stroke();
+        ctx.globalAlpha = 1;
+        for (let i = 0; i < 3; i++) { // three lobes, each a future skitter
+          const a = e.t * 0.8 + (i / 3) * TAU;
+          const lx = Math.cos(a) * 5, ly = Math.sin(a) * 5;
+          ctx.fillStyle = '#1a2e05';
+          ctx.strokeStyle = e.color;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.arc(lx, ly, e.r * 0.55, 0, TAU); ctx.fill(); ctx.stroke();
+          ctx.fillStyle = '#d9f99d'; // nucleus
           ctx.beginPath();
-          ctx.arc(Math.cos(a) * (e.r + 5), Math.sin(a) * (e.r + 5), 2.5, 0, TAU);
+          ctx.arc(lx, ly, 2 + Math.sin(e.t * 5 + i) * 1, 0, TAU);
           ctx.fill();
         }
         break;
       }
+      case 'orbiter': {
+        ctx.save(); // gyroscope rings
+        ctx.rotate(e.t * 1.8);
+        ctx.strokeStyle = e.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.ellipse(0, 0, e.r, e.r * 0.38, 0, 0, TAU); ctx.stroke();
+        ctx.restore();
+        ctx.save();
+        ctx.rotate(-e.t * 1.3 + Math.PI / 3);
+        ctx.strokeStyle = '#67e8f9';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.ellipse(0, 0, e.r, e.r * 0.38, 0, 0, TAU); ctx.stroke();
+        ctx.restore();
+        ctx.fillStyle = '#062a30'; // core housing
+        ctx.strokeStyle = e.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(0, 0, e.r * 0.5, 0, TAU); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = e.color; // pulsing core
+        ctx.beginPath(); ctx.arc(0, 0, 3 + Math.sin(e.t * 6) * 1.2, 0, TAU); ctx.fill();
+        for (let i = 0; i < 3; i++) { // orbiting charge motes
+          const a = e.t * 4 + (i / 3) * TAU;
+          ctx.beginPath();
+          ctx.arc(Math.cos(a) * (e.r + 6), Math.sin(a) * (e.r + 6), 2.2, 0, TAU);
+          ctx.fill();
+        }
+        break;
+      }
+      case 'sniper': {
+        if (e.lock > 0) { // lock-on laser to the player
+          const lx = G.player.x - e.x, ly = G.player.y - e.y;
+          ctx.strokeStyle = e.lock > 0.75 ? 'rgba(244,63,94,' + (0.3 + e.lock * 0.5) + ')'
+            : 'rgba(56,189,248,' + (0.15 + e.lock * 0.4) + ')';
+          ctx.lineWidth = e.lock > 0.75 ? 2 : 1;
+          ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(lx, ly); ctx.stroke();
+        }
+        ctx.strokeStyle = '#0c4a6e'; // tripod legs
+        ctx.lineWidth = 2.5;
+        for (let i = 0; i < 3; i++) {
+          const a = (i / 3) * TAU + Math.PI / 2;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(a) * 3, Math.sin(a) * 3);
+          ctx.lineTo(Math.cos(a) * (e.r + 3), Math.sin(a) * (e.r + 3));
+          ctx.stroke();
+        }
+        ctx.fillStyle = '#082f49'; // sensor body
+        ctx.strokeStyle = e.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(0, 0, e.r * 0.7, 0, TAU); ctx.fill(); ctx.stroke();
+        const pa = U.ang(e.x, e.y, G.player.x, G.player.y);
+        ctx.save();
+        ctx.rotate(pa);
+        ctx.fillStyle = '#0ea5e9'; // long rail
+        ctx.fillRect(2, -1.75, e.r + 14, 3.5);
+        ctx.fillStyle = '#7dd3fc';
+        ctx.fillRect(e.r + 12, -1, 4, 2);
+        ctx.restore();
+        const glow = 2 + e.lock * 3; // scope eye brightens as it locks
+        ctx.fillStyle = e.lock > 0.75 ? '#f43f5e' : '#7dd3fc';
+        ctx.beginPath(); ctx.arc(0, 0, glow, 0, TAU); ctx.fill();
+        break;
+      }
       case 'warden': {
-        ctx.fillStyle = '#1e1038';
+        for (let i = 0; i < 3; i++) { // orbiting weapon pods
+          const a = e.t * 1.2 + (i / 3) * TAU;
+          const px = Math.cos(a) * (e.r + 14), py = Math.sin(a) * (e.r + 14);
+          ctx.fillStyle = '#2e1065';
+          ctx.strokeStyle = '#7c3aed';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          for (let j = 0; j < 6; j++) {
+            const b = (j / 6) * TAU - a;
+            const qx = px + Math.cos(b) * 5, qy = py + Math.sin(b) * 5;
+            if (j === 0) ctx.moveTo(qx, qy); else ctx.lineTo(qx, qy);
+          }
+          ctx.closePath();
+          ctx.fill(); ctx.stroke();
+        }
+        ctx.fillStyle = '#1e1038'; // outer shell
         ctx.strokeStyle = e.color;
         ctx.lineWidth = 3;
         ctx.beginPath();
@@ -461,18 +762,29 @@ const Ent = (() => {
         }
         ctx.closePath();
         ctx.fill(); ctx.stroke();
-        ctx.strokeStyle = '#c4b5fd';
+        ctx.strokeStyle = '#7c3aed'; // counter-rotating inner shell
         ctx.lineWidth = 2;
         ctx.beginPath();
-        for (let i = 0; i < 3; i++) {
-          const a = -e.t * 0.7 + (i / 3) * TAU;
-          const px = Math.cos(a) * e.r * 0.55, py = Math.sin(a) * e.r * 0.55;
+        for (let i = 0; i < 6; i++) {
+          const a = -e.t * 0.45 + (i / 6) * TAU;
+          const px = Math.cos(a) * e.r * 0.72, py = Math.sin(a) * e.r * 0.72;
           if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
         }
         ctx.closePath();
         ctx.stroke();
-        const pulse = 5 + Math.sin(e.t * 6) * 2;
-        ctx.fillStyle = e.hp < e.maxHp * 0.5 ? '#f43f5e' : '#c4b5fd';
+        ctx.strokeStyle = '#c4b5fd'; // spinning tri-frame
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let i = 0; i < 3; i++) {
+          const a = -e.t * 0.7 + (i / 3) * TAU;
+          const px = Math.cos(a) * e.r * 0.5, py = Math.sin(a) * e.r * 0.5;
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.stroke();
+        const CORE = { radial: '#a78bfa', shotgun: '#f43f5e', spiral: '#e879f9', summon: '#4ade80' };
+        const pulse = 5 + Math.sin(e.t * 6) * 2; // core hints at the next attack
+        ctx.fillStyle = CORE[e.atk] || (e.hp < e.maxHp * 0.5 ? '#f43f5e' : '#c4b5fd');
         ctx.beginPath(); ctx.arc(0, 0, pulse, 0, TAU); ctx.fill();
         if (e.tele > 0) { // attack telegraph
           ctx.globalAlpha = 0.6;
@@ -495,6 +807,51 @@ const Ent = (() => {
     ctx.restore();
   }
 
+  // per-weapon gun silhouettes, drawn pointing along +x
+  function drawGun(ctx, id) {
+    ctx.fillStyle = '#28324a';
+    const col = WEAPONS[id].color;
+    switch (id) {
+      case 'repeater':
+        ctx.fillRect(5, -4.5, 13, 3.5);
+        ctx.fillRect(5, 1, 13, 3.5);
+        ctx.fillStyle = col;
+        ctx.fillRect(16, -4, 4, 2.5);
+        ctx.fillRect(16, 1.5, 4, 2.5);
+        break;
+      case 'scatter':
+        ctx.fillRect(4, -2.5, 9, 5);
+        ctx.beginPath(); // flared muzzle
+        ctx.moveTo(13, -3); ctx.lineTo(19, -5.5); ctx.lineTo(19, 5.5); ctx.lineTo(13, 3);
+        ctx.closePath(); ctx.fill();
+        ctx.fillStyle = col;
+        ctx.fillRect(17.5, -4.5, 2, 9);
+        break;
+      case 'rail':
+        ctx.fillRect(4, -2, 19, 4);
+        ctx.fillStyle = col; // accelerator coils
+        ctx.fillRect(8, -3.5, 2.5, 7);
+        ctx.fillRect(13, -3.5, 2.5, 7);
+        ctx.fillRect(18, -3.5, 2.5, 7);
+        ctx.fillRect(23, -1.5, 3, 3);
+        break;
+      case 'nova':
+        ctx.fillRect(5, -4.5, 13, 9);
+        ctx.fillStyle = col; // charge ring
+        ctx.fillRect(9, -5.5, 3, 11);
+        ctx.fillStyle = '#0c0f16'; // muzzle bore
+        ctx.beginPath(); ctx.arc(18, 0, 3, 0, TAU); ctx.fill();
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(18, 0, 3, 0, TAU); ctx.stroke();
+        break;
+      default: // pulse
+        ctx.fillRect(5, -2.5, 12, 5);
+        ctx.fillStyle = col;
+        ctx.fillRect(15, -2, 5, 4);
+    }
+  }
+
   function drawPlayer(ctx, G) {
     const p = G.player;
     for (const tp of G.trail) { // dash afterimages
@@ -506,29 +863,96 @@ const Ent = (() => {
     ctx.save();
     ctx.translate(p.x, p.y);
     if (p.invuln > 0 && Math.sin(G.time * 36) > 0) ctx.globalAlpha = 0.45;
+    if (p.moving) { // thruster flame opposite travel
+      const flick = 4 + Math.sin(G.time * 40) * 2.5;
+      ctx.save();
+      ctx.rotate(p.moveAng + Math.PI);
+      ctx.fillStyle = 'rgba(125,249,255,0.75)';
+      ctx.beginPath();
+      ctx.moveTo(p.r - 1, 3.5);
+      ctx.lineTo(p.r + 5 + flick, 0);
+      ctx.lineTo(p.r - 1, -3.5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.beginPath();
+      ctx.moveTo(p.r - 1, 1.5);
+      ctx.lineTo(p.r + 2 + flick * 0.4, 0);
+      ctx.lineTo(p.r - 1, -1.5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
     ctx.shadowColor = '#4ade80';
     ctx.shadowBlur = 14;
-    ctx.fillStyle = '#11331f';
+    ctx.fillStyle = '#0d2818'; // hull
     ctx.strokeStyle = '#4ade80';
     ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(0, 0, p.r, 0, TAU); ctx.fill(); ctx.stroke();
     ctx.rotate(p.aimAng);
-    ctx.fillStyle = '#4ade80'; // visor
-    ctx.fillRect(2, -2, 6, 4);
-    const wcol = WEAPONS[p.guns[p.gunIndex].id].color;
-    ctx.fillStyle = '#28324a'; // gun body
-    ctx.fillRect(5, -2.5, 12, 5);
-    ctx.fillStyle = wcol;      // gun tip in weapon color
-    ctx.fillRect(15, -2, 5, 4);
+    ctx.fillStyle = '#1c4532'; // rear thruster pods
+    ctx.fillRect(-p.r - 2, -7.5, 5, 5);
+    ctx.fillRect(-p.r - 2, 2.5, 5, 5);
+    ctx.strokeStyle = '#86efac'; // armor plate seams
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(0, 0, p.r - 3, 1.9, 2.9); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, p.r - 3, -2.9, -1.9); ctx.stroke();
+    ctx.fillStyle = '#bbf7d0'; // cockpit visor facing aim
+    ctx.beginPath(); ctx.arc(3.5, 0, 4.5, -1.1, 1.1); ctx.fill();
+    drawGun(ctx, p.guns[p.gunIndex].id);
     ctx.restore();
     if (p.dashCD > 0 && G.state === 'play') { // dash cooldown ring
       ctx.globalAlpha = 0.5;
       ctx.strokeStyle = '#94a3b8';
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r + 6, -Math.PI / 2, -Math.PI / 2 + TAU * (1 - p.dashCD / 0.95));
+      ctx.arc(p.x, p.y, p.r + 6, -Math.PI / 2, -Math.PI / 2 + TAU * (1 - p.dashCD / p.dashCDMax));
       ctx.stroke();
       ctx.globalAlpha = 1;
+    }
+  }
+
+  // small icon glyphs for stat items, drawn centered at origin
+  function drawItemGlyph(ctx, id, color) {
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    switch (id) {
+      case 'overclock': // lightning bolt
+        ctx.moveTo(2, -6); ctx.lineTo(-3, 1); ctx.lineTo(0.5, 1); ctx.lineTo(-2, 6); ctx.lineTo(3.5, -1); ctx.lineTo(0, -1);
+        ctx.closePath(); ctx.fill();
+        break;
+      case 'servo': // double chevron
+        ctx.moveTo(-5, -4); ctx.lineTo(-1, 0); ctx.lineTo(-5, 4);
+        ctx.moveTo(0, -4); ctx.lineTo(4, 0); ctx.lineTo(0, 4);
+        ctx.stroke();
+        break;
+      case 'flux': // recharge swirl with arrowhead
+        ctx.arc(0, 0, 4.5, 0.5, TAU - 0.8);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(4.5, -2.5); ctx.lineTo(6.5, 1); ctx.lineTo(2.5, 1);
+        ctx.closePath(); ctx.fill();
+        break;
+      case 'phase': // arrow through a barrier
+        ctx.moveTo(-6, 0); ctx.lineTo(4, 0);
+        ctx.moveTo(1.5, -3); ctx.lineTo(5, 0); ctx.lineTo(1.5, 3);
+        ctx.stroke();
+        ctx.fillRect(-1.5, -6, 2, 4);
+        ctx.fillRect(-1.5, 2, 2, 4);
+        break;
+      case 'ricochet': // bouncing zigzag
+        ctx.moveTo(-6, -4); ctx.lineTo(-1, 4); ctx.lineTo(2, -3);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(5, -6); ctx.lineTo(2.5, -2.5); ctx.lineTo(-0.5, -4.5);
+        ctx.closePath(); ctx.fill();
+        break;
+      case 'hull': // plus
+        ctx.fillRect(-1.5, -5.5, 3, 11);
+        ctx.fillRect(-5.5, -1.5, 11, 3);
+        break;
     }
   }
 
@@ -544,6 +968,10 @@ const Ent = (() => {
         ctx.fillStyle = '#fbbf24';
         ctx.beginPath();
         ctx.moveTo(0, -6); ctx.lineTo(5, 0); ctx.lineTo(0, 6); ctx.lineTo(-5, 0);
+        ctx.closePath(); ctx.fill();
+        ctx.fillStyle = '#fef3c7';
+        ctx.beginPath();
+        ctx.moveTo(0, -2.5); ctx.lineTo(2, 0); ctx.lineTo(0, 2.5); ctx.lineTo(-2, 0);
         ctx.closePath(); ctx.fill();
         break;
       }
@@ -574,12 +1002,37 @@ const Ent = (() => {
         ctx.fillRect(-5, -1.5, 10, 3);
         break;
       }
+      case 'item': { // stat upgrade: glowing hex capsule on a ground ring
+        const it = ITEMS[pk.val];
+        ctx.save();
+        ctx.translate(0, -bob); // ground ring doesn't bob
+        ctx.strokeStyle = it.color;
+        ctx.globalAlpha = 0.35 + 0.15 * Math.sin(G.time * 3);
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.ellipse(0, 10, 13, 5, 0, 0, TAU); ctx.stroke();
+        ctx.restore();
+        ctx.shadowColor = it.color;
+        ctx.shadowBlur = 14;
+        ctx.fillStyle = '#0b0e16';
+        ctx.strokeStyle = it.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); // rotating hex frame
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * TAU + G.time * 1.2;
+          const px = Math.cos(a) * 11, py = Math.sin(a) * 11;
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.fill(); ctx.stroke();
+        drawItemGlyph(ctx, pk.val, it.color);
+        break;
+      }
     }
     ctx.restore();
   }
 
   return {
-    ENEMY_DEFS, spawn, update, eShoot, damageEnemy, damageCrate, boom,
+    ENEMY_DEFS, ITEMS, ITEM_IDS, spawn, update, eShoot, damageEnemy, damageCrate, boom,
     burst, addText, showBanner, spawnPickup, dropLoot,
     drawEnemy, drawPlayer, drawPickup,
   };

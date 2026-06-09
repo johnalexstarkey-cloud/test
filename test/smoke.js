@@ -191,6 +191,71 @@ pump(30);
 assert(G.credits > creditsBefore, 'credits collected');
 assert(G.player.hp > hpBefore, 'heart collected');
 
+console.log('stat upgrade items...');
+{
+  const p = G.player;
+  p.x = G.level.rooms[0].cx;
+  p.y = G.level.rooms[0].cy;
+  p.invuln = 9;
+  const before = {
+    fr: p.stats.fireRate, sp: p.stats.speed, dc: p.stats.dashCD,
+    pierce: p.stats.pierce, bounce: p.stats.bounce, maxHp: p.maxHp,
+  };
+  const ids = vm.runInContext('Ent.ITEM_IDS', sandbox);
+  assert(ids.length === 6, 'six item types defined');
+  for (const id of ids) {
+    Ent.spawnPickup(G, p.x, p.y, 'item', id);
+    pump(3);
+  }
+  assert(p.stats.fireRate > before.fr, 'fire rate item applied');
+  assert(p.stats.speed > before.sp, 'move speed item applied');
+  assert(p.stats.dashCD < before.dc, 'dash recharge item applied');
+  assert(p.stats.pierce === before.pierce + 1, 'pierce item applied');
+  assert(p.stats.bounce === before.bounce + 1, 'bounce item applied');
+  assert(p.maxHp === before.maxHp + 1, 'hull item applied');
+  assert(Object.keys(p.itemCounts).length === 6, 'item counts tracked for HUD');
+}
+
+console.log('bullet bounce off walls...');
+{
+  // clear every enemy so nothing intercepts the test bullet (splitters may split, so repeat)
+  for (let k = 0; k < 3; k++) {
+    for (const e of G.enemies) Ent.damageEnemy(G, e, 1e9);
+    pump(2);
+  }
+  const p = G.player;
+  p.x = G.level.rooms[0].cx;
+  p.y = G.level.rooms[0].cy;
+  G.pBullets.length = 0;
+  G.pBullets.push({
+    x: p.x, y: p.y, vx: 0, vy: -500, dmg: 1, r: 3.5, life: 5.0, color: '#fff',
+    pierceLeft: 0, bounceLeft: 1, rail: false, boom: 0, boomDmg: 0, hit: null, dead: false,
+  });
+  let flipped = false;
+  for (let i = 0; i < 150 && !flipped; i++) { // a wall lies within ~2.5s in any direction
+    pump(1);
+    if (G.pBullets.length && G.pBullets[0].vy > 0) flipped = true;
+  }
+  assert(flipped, 'bullet reflected off a wall');
+  assert(G.pBullets.length === 1 && G.pBullets[0].bounceLeft === 0, 'bounce charge consumed');
+  pump(320); // outlives its 5s lifetime
+  assert(G.pBullets.length === 0, 'bounced bullet eventually expires');
+}
+
+console.log('splitter splits on death...');
+{
+  const room = G.level.rooms[0];
+  const before = G.enemies.length;
+  const sp = Ent.spawn(G, 'splitter', room.cx + 64, room.cy, room.idx);
+  sp.warp = 0;
+  Ent.damageEnemy(G, sp, 1e9);
+  pump(2);
+  assert(G.enemies.filter((e) => e.kind === 'skitter' && !e.dead).length >= 2,
+    'splitter spawned skitters (enemies before=' + before + ')');
+  for (const e of G.enemies) Ent.damageEnemy(G, e, 1e9); // clean up
+  pump(2);
+}
+
 console.log('weapon pedestal...');
 Game.loadFloor(2);
 pump(5);
