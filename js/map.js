@@ -200,7 +200,7 @@ const MapGen = (() => {
               if (Math.max(Math.abs(g.x - tx), Math.abs(g.y - ty)) <= 2) nearGate = true;
           if (nearGate) continue;
           set(tx, ty, T_CRATE);
-          crates.set(tx + ',' + ty, 3);
+          crates.set(tx + ',' + ty, 1); // crates splinter in one hit
           break;
         }
       }
@@ -229,6 +229,7 @@ const MapGen = (() => {
       grid, W, H, rooms, edges, gateMap, crates, roomOf,
       spawn, padCenter, pedestal, medkits,
       exitIdx, treasureIdx, floor, isBoss,
+      area: floor <= 3 ? 'coast' : 'deep', // past the first Colossus lies the deep jungle
     };
   }
 

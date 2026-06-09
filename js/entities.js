@@ -12,34 +12,54 @@ const Ent = (() => {
     brood:       { hp: 6,   r: 13, spd: 72,  cost: 3, color: '#a3e635', credits: [2, 3] },
     shaman:      { hp: 5,   r: 11, spd: 80,  cost: 3, color: '#4ade80', credits: [2, 4] },
     headhunter:  { hp: 4,   r: 11, spd: 70,  cost: 3, color: '#38bdf8', credits: [2, 4] },
+    primate:     { hp: 4,   r: 11, spd: 110, cost: 3, color: '#a8a29e', credits: [2, 3] },
+    archer:      { hp: 4,   r: 11, spd: 75,  cost: 3, color: '#f472b6', credits: [2, 4] },
+    spearman:    { hp: 5,   r: 12, spd: 105, cost: 2, color: '#eab308', credits: [1, 3] },
     tiki:        { hp: 130, r: 30, spd: 55,  cost: 0, color: '#fbbf24', credits: [15, 25] },
   };
 
-  // stat-upgrade items (Isaac-style): chance drop on room clear, guaranteed from bosses
+  // stackable passive treasures (Isaac-style): one at run start, chance on room
+  // clear, guaranteed from bosses. Effects are read from player.itemCounts.
   const ITEMS = {
-    overclock: {
-      name: 'PAPER CARTRIDGES', desc: '+15% fire rate', color: '#fde047',
-      apply: (p) => { p.stats.fireRate += 0.15; },
+    voodoo: {
+      name: 'VOODOO DOLL', color: '#a78bfa',
+      desc: 'when ye take a hit, every foe in the room shares the pain',
+      stack: '+2 shared damage per doll',
     },
-    servo: {
-      name: 'SEA LEGS', desc: '+12% move speed', color: '#4ade80',
-      apply: (p) => { p.stats.speed += 0.12; },
+    gunpowder: {
+      name: 'GUNPOWDER', color: '#f97316',
+      desc: '1-in-10 shots burst into shrapnel on impact',
+      stack: '+8% chance, bigger blast',
     },
-    flux: {
-      name: "ACROBAT'S SASH", desc: '-15% roll cooldown', color: '#22d3ee',
-      apply: (p) => { p.stats.dashCD *= 0.85; },
+    spinach: {
+      name: 'SPINACH', color: '#22c55e',
+      desc: 'sword swings send foes flying',
+      stack: 'even further',
     },
-    phase: {
-      name: 'CHAIN SHOT', desc: 'shots pierce +1 enemy', color: '#c084fc',
-      apply: (p) => { p.stats.pierce += 1; },
+    gasoline: {
+      name: 'GASOLINE', color: '#84cc16',
+      desc: 'dive rolls leave a fuel trail — shoot it to ignite',
+      stack: 'longer trail, hotter fire',
     },
-    ricochet: {
-      name: 'SKIPPING SHOT', desc: 'shots bounce +1 wall', color: '#fb923c',
-      apply: (p) => { p.stats.bounce += 1; },
+    parrot: {
+      name: 'POWDER PARROT', color: '#ef4444',
+      desc: 'a loyal parrot dive-bombs nearby foes',
+      stack: '+1 peck damage',
     },
-    hull: {
-      name: 'HEART OF OAK', desc: '+1 max health, +1 swig', color: '#f87171',
-      apply: (p) => { p.maxHp = Math.min(12, p.maxHp + 1); p.hp = Math.min(p.maxHp, p.hp + 1); },
+    luckycoin: {
+      name: 'LUCKY DOUBLOON', color: '#fbbf24',
+      desc: 'foes drop gold far more often',
+      stack: 'even luckier',
+    },
+    sharktooth: {
+      name: 'SHARKTOOTH CHARM', color: '#e2e8f0',
+      desc: 'kills may shake loose powder kegs',
+      stack: '+ chance',
+    },
+    cannonball: {
+      name: 'CANNONBALL', color: '#94a3b8',
+      desc: 'dive rolling through foes damages them',
+      stack: '+1 roll damage',
     },
   };
   const ITEM_IDS = Object.keys(ITEMS);
@@ -68,7 +88,8 @@ const Ent = (() => {
       warp: 0.55 + warpDelay, t: U.rand(TAU), flash: 0, tele: 0,
       fireCD: U.rand(0.8, 1.6), kbx: 0, kby: 0,
       aim: U.rand(TAU), face: 0, burst: 0, atk: '', atkT: U.rand(0.6, 1.2),
-      state: 'roam', stT: 0, cdx: 1, cdy: 0, lock: 0,
+      state: 'roam', stT: 0, cdx: 1, cdy: 0, lock: 0, h: 0,
+      leapT: 0, leapSpd: 0, lastDash: -1,
       dir: U.chance(0.5) ? 1 : -1, dead: false,
     };
     G.enemies.push(e);
@@ -222,6 +243,101 @@ const Ent = (() => {
         }
         break;
       }
+      case 'primate': { // lurks at the edge, then leaps on you suddenly
+        if (e.state === 'leap') {
+          e.stT -= dt;
+          const k = 1 - Math.max(0, e.stT) / e.leapT;
+          MapGen.moveEntity(lvl, e, e.cdx * e.leapSpd * dt, e.cdy * e.leapSpd * dt);
+          e.h = Math.sin(Math.min(1, k) * Math.PI) * 24; // airborne arc (visual)
+          if (e.stT <= 0) {
+            e.state = 'recover'; e.stT = U.rand(0.9, 1.4); e.h = 0;
+            burst(G, e.x, e.y, '#a8a29e', 8, 150, 0.4, 3);
+            G.shake = Math.max(G.shake, 2);
+          }
+          return;
+        }
+        if (e.state === 'crouch') { // coiled to spring
+          e.stT -= dt;
+          if (e.stT <= 0) {
+            e.state = 'leap';
+            const txp = p.x + (p.moving ? Math.cos(p.moveAng) * 40 : 0); // leads your run
+            const typ = p.y + (p.moving ? Math.sin(p.moveAng) * 40 : 0);
+            const dd = Math.max(40, U.dist(e.x, e.y, txp, typ));
+            e.leapT = U.clamp(dd / 480, 0.28, 0.6);
+            e.stT = e.leapT;
+            e.leapSpd = dd / e.leapT;
+            const a = U.ang(e.x, e.y, txp, typ);
+            e.cdx = Math.cos(a); e.cdy = Math.sin(a); e.face = a;
+            Sfx.dash();
+          }
+          break; // crouched still
+        }
+        if (e.state === 'recover') {
+          e.stT -= dt;
+          if (e.stT <= 0) e.state = 'roam';
+        }
+        const wantD = 150;
+        const k2 = d > wantD + 30 ? 1 : d < wantD - 30 ? -0.6 : 0;
+        const strafe2 = Math.sin(e.t * 2.3) * 1.0;
+        mx = (ux * k2 - uy * strafe2) * e.spd;
+        my = (uy * k2 + ux * strafe2) * e.spd;
+        if (e.state === 'roam' && e.fireCD <= 0 && d < 260 && d > 50 &&
+            MapGen.raycastClear(lvl, e.x, e.y, p.x, p.y)) {
+          e.state = 'crouch'; e.stT = 0.45; e.tele = 0.45;
+          e.face = Math.atan2(uy, ux);
+          e.fireCD = U.rand(2.0, 3.0);
+        }
+        break;
+      }
+      case 'archer': { // draws a bow, leads a moving target
+        const wantA = 300;
+        if (d < wantA - 60) { mx = -ux * e.spd; my = -uy * e.spd; }
+        else if (d > wantA + 120) { mx = ux * e.spd * 0.7; my = uy * e.spd * 0.7; }
+        else { mx = -uy * e.dir * e.spd * 0.4; my = ux * e.dir * e.spd * 0.4; }
+        const losA = d < 540 && MapGen.raycastClear(lvl, e.x, e.y, p.x, p.y);
+        if (losA && e.fireCD <= 0) {
+          e.lock += dt / 0.8; // drawing
+          mx *= 0.25; my *= 0.25;
+          if (e.lock >= 1) {
+            const tof = d / 300; // lead the shot at where you're headed
+            const txp = p.x + (p.moving ? Math.cos(p.moveAng) * p.spd * p.stats.speed * tof * 0.5 : 0);
+            const typ = p.y + (p.moving ? Math.sin(p.moveAng) * p.spd * p.stats.speed * tof * 0.5 : 0);
+            const aa = U.ang(e.x, e.y, txp, typ);
+            eShoot(G, e.x + Math.cos(aa) * (e.r + 4), e.y + Math.sin(aa) * (e.r + 4),
+              aa, 300, { r: 4.5, life: 2.6, color: '#f87171' });
+            Sfx.eshoot();
+            e.lock = 0;
+            e.fireCD = U.rand(1.6, 2.3);
+          }
+        } else {
+          e.lock = Math.max(0, e.lock - dt * 2);
+        }
+        break;
+      }
+      case 'spearman': { // closes in, telegraphed spear thrust
+        if (e.state === 'tele') {
+          e.stT -= dt;
+          if (e.stT <= 0) {
+            e.state = 'stab'; e.stT = 0.5;
+            eShoot(G, e.x + Math.cos(e.face) * e.r, e.y + Math.sin(e.face) * e.r,
+              e.face, 460, { r: 5, life: 0.17, color: '#eab308' }); // the jab itself
+            Sfx.eshoot();
+          }
+          break;
+        }
+        if (e.state === 'stab') {
+          e.stT -= dt;
+          if (e.stT <= 0) e.state = 'roam';
+          break;
+        }
+        mx = ux * e.spd; my = uy * e.spd;
+        if (e.fireCD <= 0 && d < 75) {
+          e.state = 'tele'; e.stT = 0.32; e.tele = 0.32;
+          e.face = Math.atan2(uy, ux);
+          e.fireCD = U.rand(1.1, 1.6);
+        }
+        break;
+      }
       case 'tiki':
         updateTiki(G, e, dt, d, ux, uy);
         return;
@@ -327,6 +443,9 @@ const Ent = (() => {
         spawn(G, 'viper', e.x + 12, e.y + U.rand(-6, 6), e.roomIdx, 0.15);
         addText(G, e.x, e.y - 14, 'HATCHED!', '#a3e635', 12);
       }
+      addXP(e.kind === 'tiki' ? 20 : (ENEMY_DEFS[e.kind].cost || 1));
+      const st = (G.player && G.player.itemCounts.sharktooth) || 0; // sharktooth charm
+      if (st && U.chance(0.08 * st)) spawnPickup(G, e.x, e.y, 'cell', 1);
       if (e.kind === 'tiki') onBossDeath(G, e);
       else dropLoot(G, e.x, e.y, 'enemy', e.kind);
     } else {
@@ -358,9 +477,11 @@ const Ent = (() => {
     const roll = Math.random();
     if (table === 'enemy') {
       const cr = ENEMY_DEFS[kind] ? ENEMY_DEFS[kind].credits : [1, 2];
-      if (roll < 0.32) spawnPickup(G, x, y, 'credit', U.ri(cr[0], cr[1]));
-      else if (roll < 0.44) spawnPickup(G, x, y, 'cell', 1);
-      else if (roll < 0.52) spawnPickup(G, x, y, 'heart', 1);
+      const luck = (G.player && G.player.itemCounts.luckycoin) || 0;
+      const cChance = Math.min(0.32 + luck * 0.08, 0.75);
+      if (roll < cChance) spawnPickup(G, x, y, 'credit', U.ri(cr[0], cr[1]));
+      else if (roll < cChance + 0.12) spawnPickup(G, x, y, 'cell', 1);
+      else if (roll < cChance + 0.2) spawnPickup(G, x, y, 'heart', 1);
     } else if (table === 'crate') {
       if (roll < 0.4) spawnPickup(G, x, y, 'credit', U.ri(1, 2));
       else if (roll < 0.58) spawnPickup(G, x, y, 'cell', 1);
@@ -425,6 +546,11 @@ const Ent = (() => {
         if (tx < 0 || ty < 0 || tx >= G.level.W || ty >= G.level.H) continue;
         if (G.level.grid[ty * G.level.W + tx] === T_CRATE) damageCrate(G, tx, ty, 99);
       }
+    if (G.gas) { // blasts ignite spilled fuel
+      for (const g of G.gas) {
+        if (!g.burn && g.fuse === undefined && U.dist(x, y, g.x, g.y) < radius + g.r) g.fuse = 0.05;
+      }
+    }
   }
 
   // ── fx primitives ──
@@ -751,6 +877,115 @@ const Ent = (() => {
         ctx.beginPath(); ctx.arc(bx, by, 3, 0, TAU); ctx.stroke();
         break;
       }
+      case 'primate': { // grey-furred jungle ape
+        const crouch = e.state === 'crouch';
+        const airborne = e.state === 'leap';
+        const gk = 1 - e.h / 60; // ground shadow shrinks as it leaps
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.beginPath();
+        ctx.ellipse(0, e.r * 0.6, e.r * gk, e.r * 0.4 * gk, 0, 0, TAU);
+        ctx.fill();
+        ctx.translate(0, -e.h); // lifted while leaping
+        if (airborne) ctx.scale(0.92, 1.18);
+        if (crouch) {
+          ctx.scale(1.12, 0.78);
+          ctx.translate(Math.sin(e.t * 35) * 1.2, 0); // quivering before the pounce
+        }
+        ctx.rotate(e.face);
+        ctx.strokeStyle = '#57534e'; // long arms to fists
+        ctx.lineWidth = 4;
+        const reach = airborne ? 14 : 10;
+        for (const side of [-1, 1]) {
+          ctx.beginPath();
+          ctx.moveTo(2, side * 5);
+          ctx.quadraticCurveTo(reach * 0.7, side * (e.r + 2), reach, side * (e.r - 1));
+          ctx.stroke();
+          ctx.fillStyle = '#44403c';
+          ctx.beginPath(); ctx.arc(reach, side * (e.r - 1), 3, 0, TAU); ctx.fill();
+        }
+        ctx.fillStyle = '#57534e'; // body
+        ctx.strokeStyle = e.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.ellipse(-2, 0, e.r, e.r * 0.85, 0, 0, TAU); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#78716c'; // silver back stripe
+        ctx.beginPath(); ctx.ellipse(-5, 0, e.r * 0.5, e.r * 0.6, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = '#d6d3d1'; // face
+        ctx.beginPath(); ctx.arc(6, 0, 4.5, 0, TAU); ctx.fill();
+        ctx.fillStyle = crouch || airborne ? '#f43f5e' : '#1c1917'; // eyes flare on attack
+        ctx.beginPath(); ctx.arc(7.5, -1.8, 1.2, 0, TAU); ctx.arc(7.5, 1.8, 1.2, 0, TAU); ctx.fill();
+        ctx.strokeStyle = '#1c1917'; // brow
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(5, -3.5); ctx.lineTo(10, -2.5); ctx.stroke();
+        break;
+      }
+      case 'archer': { // native with a longbow
+        drawTribesman(ctx, G, e, {
+          skin: '#92400e', paint: '#f472b6', gunLen: 0,
+          feathers: ['#f472b6', '#fb7185', '#f472b6'],
+        });
+        // bow held toward the player (drawTribesman left us rotated)
+        const draw = U.clamp(e.lock, 0, 1);
+        ctx.strokeStyle = '#854d0e';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.arc(e.r + 2, 0, 9, -1.15, 1.15); ctx.stroke();
+        ctx.strokeStyle = '#e7e5e4'; // string, pulled back as it draws
+        ctx.lineWidth = 1;
+        const sx = e.r + 2 + Math.cos(1.15) * 9;
+        ctx.beginPath();
+        ctx.moveTo(sx, -Math.sin(1.15) * 9);
+        ctx.lineTo(e.r + 2 - draw * 7, 0);
+        ctx.lineTo(sx, Math.sin(1.15) * 9);
+        ctx.stroke();
+        if (draw > 0.05) { // nocked arrow
+          ctx.strokeStyle = '#d6b25c';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(e.r + 2 - draw * 7, 0);
+          ctx.lineTo(e.r + 13, 0);
+          ctx.stroke();
+          ctx.fillStyle = draw > 0.85 ? '#f43f5e' : '#57534e';
+          ctx.beginPath();
+          ctx.moveTo(e.r + 16, 0); ctx.lineTo(e.r + 11, -2.2); ctx.lineTo(e.r + 11, 2.2);
+          ctx.closePath(); ctx.fill();
+        }
+        break;
+      }
+      case 'spearman': { // native with a stone-tipped spear
+        const pa2 = e.state === 'tele' || e.state === 'stab'
+          ? e.face : U.ang(e.x, e.y, G.player.x, G.player.y);
+        ctx.rotate(pa2);
+        ctx.translate(0, Math.sin(e.t * 7) * 1.2);
+        for (let i = -1; i <= 1; i++) { // green feathers
+          ctx.save();
+          ctx.rotate(Math.PI + i * 0.45);
+          ctx.fillStyle = i ? '#65a30d' : '#eab308';
+          ctx.beginPath(); ctx.ellipse(e.r + 1, 0, 6.5, 2.2, 0, 0, TAU); ctx.fill();
+          ctx.restore();
+        }
+        ctx.fillStyle = '#92400e'; // body
+        ctx.strokeStyle = e.color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(0, 0, e.r * 0.75, 0, TAU); ctx.fill(); ctx.stroke();
+        ctx.strokeStyle = '#eab308'; // war paint
+        ctx.beginPath(); ctx.moveTo(-2, -4); ctx.lineTo(4, -4); ctx.moveTo(-2, 4); ctx.lineTo(4, 4); ctx.stroke();
+        // the spear: pulled back on windup, lunged on stab
+        const off = e.state === 'tele' ? -6 + Math.sin(e.t * 40) * 1 : e.state === 'stab' ? 13 : 0;
+        ctx.fillStyle = '#854d0e';
+        ctx.fillRect(-6 + off, -1.25, e.r + 20, 2.5);
+        ctx.fillStyle = '#78716c'; // stone head
+        ctx.beginPath();
+        ctx.moveTo(e.r + 20 + off, -3.5); ctx.lineTo(e.r + 27 + off, 0); ctx.lineTo(e.r + 20 + off, 3.5);
+        ctx.closePath(); ctx.fill();
+        if (e.state === 'stab') { // thrust motion lines
+          ctx.strokeStyle = 'rgba(254,243,199,0.5)';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(4, -6); ctx.lineTo(e.r + 12, -6);
+          ctx.moveTo(4, 6); ctx.lineTo(e.r + 12, 6);
+          ctx.stroke();
+        }
+        break;
+      }
       case 'tiki': { // the stone colossus
         for (let i = 0; i < 3; i++) { // orbiting stone shards
           const a = e.t * 1.2 + (i / 3) * TAU;
@@ -963,46 +1198,67 @@ const Ent = (() => {
     }
   }
 
-  // small icon glyphs for stat items, drawn centered at origin
+  // small icon glyphs for treasures, drawn centered at origin
   function drawItemGlyph(ctx, id, color) {
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
     ctx.lineWidth = 1.8;
     ctx.beginPath();
     switch (id) {
-      case 'overclock': // powder flash
-        ctx.moveTo(2, -6); ctx.lineTo(-3, 1); ctx.lineTo(0.5, 1); ctx.lineTo(-2, 6); ctx.lineTo(3.5, -1); ctx.lineTo(0, -1);
-        ctx.closePath(); ctx.fill();
-        break;
-      case 'servo': // double chevron
-        ctx.moveTo(-5, -4); ctx.lineTo(-1, 0); ctx.lineTo(-5, 4);
-        ctx.moveTo(0, -4); ctx.lineTo(4, 0); ctx.lineTo(0, 4);
-        ctx.stroke();
-        break;
-      case 'flux': // tumbling swirl
-        ctx.arc(0, 0, 4.5, 0.5, TAU - 0.8);
-        ctx.stroke();
+      case 'voodoo': // pinned doll
+        ctx.arc(0, -3.5, 2.5, 0, TAU); ctx.fill();
+        ctx.fillRect(-1.2, -1.5, 2.4, 6);
+        ctx.fillRect(-4.5, 0, 9, 1.8);
         ctx.beginPath();
-        ctx.moveTo(4.5, -2.5); ctx.lineTo(6.5, 1); ctx.lineTo(2.5, 1);
+        ctx.moveTo(-4, -6); ctx.lineTo(2, 2); // the pin
+        ctx.stroke();
+        break;
+      case 'gunpowder': // burst star
+        for (let i = 0; i < 8; i++) {
+          const a = (i / 8) * TAU;
+          const r = i % 2 ? 3 : 6.5;
+          ctx.moveTo(0, 0);
+          ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+        }
+        ctx.stroke();
+        ctx.beginPath(); ctx.arc(0, 0, 1.8, 0, TAU); ctx.fill();
+        break;
+      case 'spinach': // leaf
+        ctx.moveTo(0, 6);
+        ctx.quadraticCurveTo(-6.5, 0, 0, -6);
+        ctx.quadraticCurveTo(6.5, 0, 0, 6);
+        ctx.fill();
+        ctx.strokeStyle = '#14532d';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(0, 5); ctx.lineTo(0, -5); ctx.stroke();
+        break;
+      case 'gasoline': // droplet
+        ctx.moveTo(0, -6);
+        ctx.quadraticCurveTo(5, 1, 0, 5.5);
+        ctx.quadraticCurveTo(-5, 1, 0, -6);
+        ctx.fill();
+        break;
+      case 'parrot': // bird in flight
+        ctx.moveTo(-6, 1); ctx.quadraticCurveTo(0, -6, 6, 1); // wings
+        ctx.quadraticCurveTo(0, -2, -6, 1);
+        ctx.fill();
+        ctx.beginPath(); ctx.arc(0, 2.5, 2, 0, TAU); ctx.fill();
+        break;
+      case 'luckycoin': // doubloon
+        ctx.arc(0, 0, 5.5, 0, TAU); ctx.stroke();
+        ctx.beginPath(); ctx.arc(0, 0, 2.2, 0, TAU); ctx.fill();
+        break;
+      case 'sharktooth': // tooth
+        ctx.moveTo(-4.5, -4.5); ctx.lineTo(4.5, -4.5); ctx.lineTo(0.5, 6);
         ctx.closePath(); ctx.fill();
         break;
-      case 'phase': // shot through a barrier
-        ctx.moveTo(-6, 0); ctx.lineTo(4, 0);
-        ctx.moveTo(1.5, -3); ctx.lineTo(5, 0); ctx.lineTo(1.5, 3);
-        ctx.stroke();
-        ctx.fillRect(-1.5, -6, 2, 4);
-        ctx.fillRect(-1.5, 2, 2, 4);
-        break;
-      case 'ricochet': // skipping zigzag
-        ctx.moveTo(-6, -4); ctx.lineTo(-1, 4); ctx.lineTo(2, -3);
-        ctx.stroke();
+      case 'cannonball': // ball with speed lines
+        ctx.arc(1.5, 0, 4.5, 0, TAU); ctx.fill();
         ctx.beginPath();
-        ctx.moveTo(5, -6); ctx.lineTo(2.5, -2.5); ctx.lineTo(-0.5, -4.5);
-        ctx.closePath(); ctx.fill();
-        break;
-      case 'hull': // heart of oak
-        ctx.fillRect(-1.5, -5.5, 3, 11);
-        ctx.fillRect(-5.5, -1.5, 11, 3);
+        ctx.moveTo(-3, -3.5); ctx.lineTo(-7, -3.5);
+        ctx.moveTo(-4, 0); ctx.lineTo(-8, 0);
+        ctx.moveTo(-3, 3.5); ctx.lineTo(-7, 3.5);
+        ctx.stroke();
         break;
     }
   }

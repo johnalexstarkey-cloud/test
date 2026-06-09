@@ -52,62 +52,106 @@ const Sfx = (() => {
     src.start(t0); src.stop(t0 + o.t + 0.05);
   }
 
-  // ── THE SHANTY ──────────────────────────────────────────────
-  // An original 8-bar jig in A minor, 6/8 time (~125 bpm dotted feel).
-  // Square-wave lead doubled an octave down, triangle bass with a fifth,
-  // kick on the big beats, snare answer, shaker on every eighth.
-  const N = { E4: 329.63, G4: 392.0, A4: 440.0, B4: 493.88, C5: 523.25, D5: 587.33 };
+  // ── MUSIC ───────────────────────────────────────────────────
+  // Two sequenced tracks, all synthesized:
+  //  coast — an original 8-bar jig in A minor, 6/8 (~125 bpm dotted feel):
+  //          square lead doubled an octave down, triangle bass + fifth,
+  //          kick / snare / shaker.
+  //  deep  — the deep jungle: slow Phrygian drone in E with half-step
+  //          creep and a tritone sting, low toms, sparse ticks, far-off
+  //          bell tones.
+  const N = {
+    D4: 293.66, E4: 329.63, F4: 349.23, G4: 392.0, A4: 440.0,
+    Bb4: 466.16, B4: 493.88, C5: 523.25, D5: 587.33,
+  };
   const HOLD = -1, REST = 0;
-  const MELODY = [ // 8 bars x 6 eighths
-    N.A4, N.A4, N.A4, N.C5, N.B4, N.C5,
-    N.A4, HOLD, HOLD, N.E4, HOLD, HOLD,
-    N.G4, N.G4, N.G4, N.B4, N.A4, N.B4,
-    N.G4, HOLD, HOLD, N.E4, HOLD, HOLD,
-    N.A4, N.A4, N.A4, N.C5, N.B4, N.C5,
-    N.D5, HOLD, N.C5, N.B4, HOLD, N.A4,
-    N.G4, N.E4, N.G4, N.A4, N.B4, N.C5,
-    N.A4, HOLD, HOLD, REST, N.E4, N.G4,
-  ];
-  const BASS = [110, 110, 98, 82.41, 110, 87.31, 98, 110]; // root per bar: A A G E / A F G A
-  const STEP = 0.16; // seconds per eighth note
+  const TRACKS = {
+    coast: {
+      step: 0.16,
+      lead: { type: 'square', vol: 0.045, subType: 'triangle', subVol: 0.028 },
+      mel: [ // 8 bars x 6 eighths
+        N.A4, N.A4, N.A4, N.C5, N.B4, N.C5,
+        N.A4, HOLD, HOLD, N.E4, HOLD, HOLD,
+        N.G4, N.G4, N.G4, N.B4, N.A4, N.B4,
+        N.G4, HOLD, HOLD, N.E4, HOLD, HOLD,
+        N.A4, N.A4, N.A4, N.C5, N.B4, N.C5,
+        N.D5, HOLD, N.C5, N.B4, HOLD, N.A4,
+        N.G4, N.E4, N.G4, N.A4, N.B4, N.C5,
+        N.A4, HOLD, HOLD, REST, N.E4, N.G4,
+      ],
+      bass: [110, 110, 98, 82.41, 110, 87.31, 98, 110], // A A G E / A F G A
+      drums: 'jig',
+    },
+    deep: {
+      step: 0.21,
+      lead: { type: 'triangle', vol: 0.04, subType: 'sine', subVol: 0.025 },
+      mel: [
+        N.E4, HOLD, HOLD, HOLD, HOLD, HOLD,
+        N.G4, HOLD, HOLD, N.F4, HOLD, HOLD,
+        N.E4, HOLD, HOLD, HOLD, N.Bb4, HOLD,
+        N.A4, HOLD, HOLD, N.G4, HOLD, N.F4,
+        N.E4, HOLD, HOLD, HOLD, HOLD, HOLD,
+        N.F4, HOLD, N.E4, N.F4, HOLD, HOLD,
+        N.D4, HOLD, HOLD, N.Bb4, HOLD, N.A4,
+        N.E4, HOLD, HOLD, REST, REST, REST,
+      ],
+      bass: [82.41, 82.41, 87.31, 82.41, 82.41, 87.31, 73.42, 82.41], // E E F E / E F D E
+      drums: 'omen',
+    },
+  };
+  let track = 'coast';
   let musTimer = null, musNext = 0, musStep = 0;
 
+  api.setTrack = (t) => {
+    if (TRACKS[t] && t !== track) { track = t; musStep = 0; }
+  };
+
   function scheduleStep(i, when) {
+    const T = TRACKS[track];
     const dly = when - ctx.currentTime;
     const beat = i % 6, bar = (i / 6) | 0;
     // lead
-    const f = MELODY[i];
+    const f = T.mel[i];
     if (f > 0) {
       let dur = 1, j = i + 1;
-      while (MELODY[j % MELODY.length] === HOLD && dur < 6) { dur++; j++; }
-      const t = dur * STEP * 0.92;
-      tone({ type: 'square', f0: f, t, vol: 0.045, delay: dly });
-      tone({ type: 'triangle', f0: f / 2, t, vol: 0.028, delay: dly });
+      while (T.mel[j % T.mel.length] === HOLD && dur < 6) { dur++; j++; }
+      const t = dur * T.step * 0.92;
+      tone({ type: T.lead.type, f0: f, t, vol: T.lead.vol, delay: dly });
+      tone({ type: T.lead.subType, f0: f / 2, t, vol: T.lead.subVol, delay: dly });
     }
     // bass + fifth on the two big beats of the bar
     if (beat === 0 || beat === 3) {
-      const b = BASS[bar];
-      tone({ type: 'triangle', f0: b, t: 0.3, vol: 0.06, delay: dly });
-      tone({ type: 'sine', f0: b * 1.5, t: 0.22, vol: 0.02, delay: dly });
+      const b = T.bass[bar];
+      tone({ type: 'triangle', f0: b, t: T.step * 2, vol: 0.06, delay: dly });
+      tone({ type: 'sine', f0: b * 1.5, t: T.step * 1.4, vol: 0.02, delay: dly });
     }
-    // percussion: kick / snare / shaker
-    if (beat === 0) tone({ type: 'sine', f0: 150, f1: 50, t: 0.12, vol: 0.11, delay: dly });
-    if (beat === 3) {
-      tone({ type: 'sine', f0: 130, f1: 50, t: 0.1, vol: 0.07, delay: dly });
-      burst({ f0: 1800, f1: 400, t: 0.09, vol: 0.05, delay: dly });
+    if (T.drums === 'jig') { // kick / snare / shaker
+      if (beat === 0) tone({ type: 'sine', f0: 150, f1: 50, t: 0.12, vol: 0.11, delay: dly });
+      if (beat === 3) {
+        tone({ type: 'sine', f0: 130, f1: 50, t: 0.1, vol: 0.07, delay: dly });
+        burst({ f0: 1800, f1: 400, t: 0.09, vol: 0.05, delay: dly });
+      }
+      burst({ fType: 'highpass', f0: 5500, f1: 7500, t: 0.03, vol: beat === 0 || beat === 3 ? 0.022 : 0.013, delay: dly });
+    } else { // omen: low toms, sparse ticks, far-off bells
+      if (beat === 0) tone({ type: 'sine', f0: 95, f1: 38, t: 0.3, vol: 0.13, delay: dly });
+      if (beat === 3 && bar % 2 === 1) tone({ type: 'sine', f0: 70, f1: 32, t: 0.35, vol: 0.1, delay: dly });
+      if (beat % 2 === 0) burst({ fType: 'highpass', f0: 4000, f1: 5000, t: 0.025, vol: 0.008, delay: dly });
+      if (beat === 0 && Math.random() < 0.18) {
+        tone({ type: 'sine', f0: Math.random() < 0.5 ? 1318.5 : 987.8, f1: 600, t: 1.4, vol: 0.014, delay: dly + Math.random() * 0.4 });
+      }
     }
-    burst({ fType: 'highpass', f0: 5500, f1: 7500, t: 0.03, vol: beat === 0 || beat === 3 ? 0.022 : 0.013, delay: dly });
   }
 
   function startMusic() {
     if (musTimer) return;
     musTimer = setInterval(() => {
       if (!ctx || api.muted || ctx.state !== 'running') return;
+      const T = TRACKS[track];
       const ahead = ctx.currentTime + 0.7;
       if (musNext < ctx.currentTime) musNext = ctx.currentTime + 0.05;
       while (musNext < ahead) {
-        scheduleStep(musStep % MELODY.length, musNext);
-        musNext += STEP;
+        scheduleStep(musStep % T.mel.length, musNext);
+        musNext += T.step;
         musStep++;
       }
     }, 200);
@@ -184,6 +228,10 @@ const Sfx = (() => {
     tone({ type: 'sine', f0: 200, f1: 700, t: 0.5, vol: 0.07, delay: 0.1 });
   };
   api.deplete = () => tone({ type: 'square', f0: 200, f1: 90, t: 0.2, vol: 0.1 });
+  api.ignite = () => burst({ f0: 900, f1: 200, t: 0.3, vol: 0.13 }); // gasoline catching
+  api.shrap = () => burst({ f0: 2000, f1: 250, t: 0.14, vol: 0.16 }); // shrapnel crackle
+  api.levelup = () => [523, 659, 784, 1046].forEach((f, i) =>
+    tone({ type: 'triangle', f0: f, t: 0.14, vol: 0.09, delay: i * 0.07 }));
   api.crate = () => burst({ f0: 700, f1: 150, t: 0.18, vol: 0.16 });
   api.bossDown = () => {
     api.boom(true);

@@ -34,6 +34,8 @@ const G = {
   level: null, player: null,
   enemies: [], pBullets: [], eBullets: [],
   particles: [], pickups: [], texts: [], flashes: [], trail: [], slashes: [],
+  gas: [], parrot: null, splash: null, dashId: 0,
+  xp: 0, xpNeed: 6, plvl: 1, pendingLevels: 0, lvlChoices: [],
   cam: { x: 0, y: 0 }, shake: 0, hurtFlash: 0,
   banner: null, boss: null, pedestal: null, weaponQueue: [],
   channel: 0, trans: null, best: null, newBest: false,
@@ -44,17 +46,72 @@ try { G.best = JSON.parse(localStorage.getItem('blackpowder_best')); } catch { G
 
 function newRun() {
   G.floor = 1; G.credits = 0; G.kills = 0; G.runTime = 0; G.newBest = false;
+  G.xp = 0; G.xpNeed = 6; G.plvl = 1; G.pendingLevels = 0; G.lvlChoices = [];
+  G.splash = null;
   G.player = {
     x: 0, y: 0, r: 11, hp: 6, maxHp: 6, spd: 235,
     dashT: 0, dashCD: 0, dashCDMax: 0.95, dashDX: 1, dashDY: 0, invuln: 0, fireCD: 0,
     guns: [makeGun('flintlock'), makeGun('sword')], gunIndex: 0, aimAng: 0,
-    moving: false, moveAng: 0, gunFlip: false, slashFlip: false,
-    stats: { fireRate: 1, speed: 1, dashCD: 1, pierce: 0, bounce: 0 },
+    moving: false, moveAng: 0, gunFlip: false, slashFlip: false, lastGasX: 0, lastGasY: 0,
+    stats: { fireRate: 1, speed: 1, dashCD: 1, pierce: 0, bounce: 0, dmg: 1 },
     itemCounts: {},
   };
   G.weaponQueue = U.shuffle(WEAPON_POOL);
   loadFloor(1);
+  grantItem(U.pick(Ent.ITEM_IDS)); // every voyage begins with a treasure
   G.state = 'play';
+}
+
+// ── items: stackable passive treasures ──
+
+function ic(id) { return (G.player && G.player.itemCounts[id]) || 0; }
+
+function grantItem(id, x, y) {
+  const p = G.player;
+  p.itemCounts[id] = (p.itemCounts[id] || 0) + 1;
+  G.splash = { id, t: 0, count: p.itemCounts[id] }; // the slam-in title card
+  Sfx.weaponGet();
+  Ent.burst(G, x === undefined ? p.x : x, y === undefined ? p.y : y, Ent.ITEMS[id].color, 18, 180, 0.6, 3);
+}
+
+// ── experience & level-up boons ──
+
+const LEVEL_OPTS = [
+  { id: 'firerate', name: 'QUICK HANDS', desc: '+15% fire rate', color: '#fde047',
+    apply: (p) => { p.stats.fireRate += 0.15; } },
+  { id: 'speed', name: 'FLEET FOOT', desc: '+10% move speed', color: '#4ade80',
+    apply: (p) => { p.stats.speed += 0.10; } },
+  { id: 'roll', name: 'TUMBLER', desc: '-12% roll cooldown', color: '#22d3ee',
+    apply: (p) => { p.stats.dashCD *= 0.88; } },
+  { id: 'pierce', name: 'CHAIN SHOT', desc: 'shots pierce +1 enemy', color: '#c084fc',
+    apply: (p) => { p.stats.pierce += 1; } },
+  { id: 'bounce', name: 'SKIPPING SHOT', desc: 'shots bounce +1 wall', color: '#fb923c',
+    apply: (p) => { p.stats.bounce += 1; } },
+  { id: 'health', name: 'HEART OF OAK', desc: '+1 max health, healed', color: '#f87171',
+    apply: (p) => { p.maxHp = Math.min(12, p.maxHp + 1); p.hp = Math.min(p.maxHp, p.hp + 1); } },
+  { id: 'damage', name: 'HEAVY BALLS', desc: '+12% damage', color: '#e2e8f0',
+    apply: (p) => { p.stats.dmg += 0.12; } },
+];
+
+function addXP(n) {
+  if (G.state === 'menu') return;
+  G.xp += n;
+  while (G.xp >= G.xpNeed) {
+    G.xp -= G.xpNeed;
+    G.plvl++;
+    G.pendingLevels++;
+    G.xpNeed = 6 + G.plvl * 4;
+  }
+}
+
+function rollChoices() {
+  G.lvlChoices = U.shuffle(LEVEL_OPTS).slice(0, 3);
+}
+
+function lvlCardRects() {
+  const w = 230, h = 130, gap = 24;
+  const x0 = (VW - (3 * w + 2 * gap)) / 2, y = VH * 0.4;
+  return [0, 1, 2].map((i) => ({ x: x0 + i * (w + gap), y, w, h }));
 }
 
 function loadFloor(n) {
@@ -62,7 +119,9 @@ function loadFloor(n) {
   G.level = MapGen.generate(n);
   G.enemies = []; G.pBullets = []; G.eBullets = [];
   G.particles = []; G.pickups = []; G.texts = []; G.flashes = []; G.trail = []; G.slashes = [];
+  G.gas = []; G.parrot = null;
   G.boss = null; G.channel = 0;
+  Sfx.setTrack(G.level.area === 'deep' ? 'deep' : 'coast');
   G.player.x = G.level.spawn.x;
   G.player.y = G.level.spawn.y;
   G.cam.x = G.player.x - VW / 2;
@@ -73,7 +132,8 @@ function loadFloor(n) {
     G.pedestal = { x: G.level.pedestal.x, y: G.level.pedestal.y, weaponId: id || null, taken: false };
   }
   for (const m of G.level.medkits) Ent.spawnPickup(G, m.x, m.y, 'heart');
-  Ent.showBanner(G, 'ISLE ' + n, G.level.isBoss ? '!! the TIKI COLOSSUS stirs !!' : U.pick(FLAVOR));
+  if (n === 4) Ent.showBanner(G, 'THE DEEP JUNGLE', 'the canopy swallows the sun — new horrors stir');
+  else Ent.showBanner(G, 'ISLE ' + n, G.level.isBoss ? '!! the TIKI COLOSSUS stirs !!' : U.pick(FLAVOR));
 }
 
 function screenToWorld(sx, sy) { return { x: sx + G.cam.x, y: sy + G.cam.y }; }
@@ -82,6 +142,7 @@ function screenToWorld(sx, sy) { return { x: sx + G.cam.x, y: sy + G.cam.y }; }
 
 function update(dt) {
   G.time += dt;
+  if (G.splash) { G.splash.t += dt; if (G.splash.t > 2.4) G.splash = null; }
   if ((Input.hit('KeyP') || Input.hit('Escape')) && (G.state === 'play' || G.state === 'pause')) {
     G.state = G.state === 'play' ? 'pause' : 'play';
     Sfx.click();
@@ -97,6 +158,26 @@ function update(dt) {
       break;
     case 'pause':
       break;
+    case 'levelup': { // pick 1 of 3 boons
+      let pick = -1;
+      for (let i = 0; i < 3; i++) if (Input.hit('Digit' + (i + 1))) pick = i;
+      if (Input.clicked) {
+        const rects = lvlCardRects();
+        for (let i = 0; i < 3; i++) {
+          const r = rects[i];
+          if (Input.mx >= r.x && Input.mx <= r.x + r.w && Input.my >= r.y && Input.my <= r.y + r.h) pick = i;
+        }
+      }
+      if (pick >= 0 && G.lvlChoices[pick]) {
+        G.lvlChoices[pick].apply(G.player);
+        Sfx.levelup();
+        Ent.burst(G, G.player.x, G.player.y, G.lvlChoices[pick].color, 16, 160, 0.5, 3);
+        G.pendingLevels--;
+        if (G.pendingLevels > 0) rollChoices();
+        else G.state = 'play';
+      }
+      break;
+    }
     case 'dead':
       G.deadT += dt;
       updateFx(dt);
@@ -124,11 +205,108 @@ function updatePlay(dt) {
   G.enemies = G.enemies.filter((e) => !e.dead);
   updateEBullets(dt);
   contacts();
+  updateGas(dt);
+  updateParrot(dt);
+  G.enemies = G.enemies.filter((e) => !e.dead);
   updatePickups(dt);
   pedestalLogic();
   exitLogic(dt);
   updateFx(dt);
   camera(dt);
+  if (G.pendingLevels > 0 && G.state === 'play') { // earned a boon
+    rollChoices();
+    G.state = 'levelup';
+    Sfx.unlock();
+  }
+}
+
+// gasoline trail: puddles dropped while rolling, lit by gunfire or blasts
+function updateGas(dt) {
+  if (!G.gas.length) return;
+  for (const g of G.gas) {
+    g.life -= dt;
+    if (g.fuse !== undefined && !g.burn) {
+      g.fuse -= dt;
+      if (g.fuse <= 0) {
+        g.burn = true; g.bt = 1.5; g.tick = 0.05;
+        Sfx.ignite();
+        for (const o of G.gas) { // fire races along the trail
+          if (!o.burn && o.fuse === undefined && U.dist(g.x, g.y, o.x, o.y) < 46) o.fuse = 0.1;
+        }
+      }
+    }
+    if (g.burn) {
+      g.bt -= dt; g.tick -= dt;
+      if (g.tick <= 0) {
+        g.tick = 0.22;
+        for (const e of G.enemies) {
+          if (e.warp > 0 || e.dead) continue;
+          if (U.dist(g.x, g.y, e.x, e.y) < g.r + e.r + 4) {
+            Ent.damageEnemy(G, e, 0.6 + 0.3 * (g.stacks - 1));
+          }
+        }
+      }
+      if (U.chance(16 * dt)) {
+        Ent.burst(G, g.x + U.rand(-6, 6), g.y + U.rand(-6, 6), U.chance(0.5) ? '#fb923c' : '#fde047', 1, 50, 0.35, 3);
+      }
+      if (g.bt <= 0) g.dead = true;
+    }
+    if (g.life <= 0) g.dead = true;
+  }
+  G.gas = G.gas.filter((g) => !g.dead);
+}
+
+// the powder parrot: orbits, then dive-bombs the nearest foe
+function updateParrot(dt) {
+  const stacks = ic('parrot');
+  if (!stacks) return;
+  const p = G.player;
+  if (!G.parrot) G.parrot = { x: p.x, y: p.y - 20, mode: 'orbit', cd: 1.5, a: U.rand(TAU), tid: 0, flap: 0 };
+  const pr = G.parrot;
+  pr.flap += dt * 14;
+  pr.cd -= dt;
+  if (pr.mode === 'orbit') {
+    pr.a += dt * 2.2;
+    const tx = p.x + Math.cos(pr.a) * 30, ty = p.y + Math.sin(pr.a) * 30 - 14;
+    const k = 1 - Math.exp(-8 * dt);
+    pr.x += (tx - pr.x) * k;
+    pr.y += (ty - pr.y) * k;
+    if (pr.cd <= 0) {
+      let best = null, bd = 240;
+      for (const e of G.enemies) {
+        if (e.warp > 0 || e.dead) continue;
+        const dd = U.dist(pr.x, pr.y, e.x, e.y);
+        if (dd < bd) { bd = dd; best = e; }
+      }
+      if (best) { pr.mode = 'dive'; pr.tid = best.id; }
+    }
+  } else {
+    const t = G.enemies.find((e) => e.id === pr.tid && !e.dead);
+    if (!t) { pr.mode = 'orbit'; pr.cd = 2.2; return; }
+    const a = U.ang(pr.x, pr.y, t.x, t.y);
+    pr.x += Math.cos(a) * 520 * dt;
+    pr.y += Math.sin(a) * 520 * dt;
+    if (U.dist(pr.x, pr.y, t.x, t.y) < t.r + 6) {
+      Ent.damageEnemy(G, t, stacks * G.player.stats.dmg);
+      Ent.burst(G, t.x, t.y, '#ef4444', 5, 120, 0.3, 2);
+      pr.mode = 'orbit';
+      pr.cd = 2.2;
+    }
+  }
+}
+
+// gunpowder item: shrapnel burst around a struck enemy
+function shrapnel(x, y, stacks, excludeId) {
+  const radius = 46 + 14 * stacks;
+  Sfx.shrap();
+  Ent.burst(G, x, y, '#fdba74', 8 + stacks * 3, 220, 0.35, 2.5);
+  G.flashes.push({ x, y, r: radius, t: 0.12, max: 0.12, color: '#fb923c' });
+  for (const e of G.enemies) {
+    if (e.warp > 0 || e.dead || e.id === excludeId) continue;
+    if (U.dist(x, y, e.x, e.y) < radius + e.r) {
+      Ent.damageEnemy(G, e, (1 + 0.5 * (stacks - 1)) * G.player.stats.dmg);
+    }
+  }
 }
 
 // ── player ──
@@ -152,6 +330,8 @@ function updatePlayer(dt) {
     if (il > 0) { p.dashDX = ix; p.dashDY = iy; }
     else { p.dashDX = Math.cos(p.aimAng); p.dashDY = Math.sin(p.aimAng); }
     p.invuln = Math.max(p.invuln, 0.3);
+    G.dashId++; // for cannonball roll-through hits
+    p.lastGasX = p.x; p.lastGasY = p.y;
     Sfx.dash();
   }
 
@@ -161,6 +341,12 @@ function updatePlayer(dt) {
     vx = p.dashDX * 640; vy = p.dashDY * 640;
     G.trail.push({ x: p.x, y: p.y, t: 0.22 });
     if (G.trail.length > 24) G.trail.shift();
+    const gst = ic('gasoline'); // leave a fuel trail
+    if (gst && U.dist(p.x, p.y, p.lastGasX, p.lastGasY) > 13) {
+      p.lastGasX = p.x; p.lastGasY = p.y;
+      G.gas.push({ x: p.x, y: p.y, r: 8 + gst * 2, life: 7, burn: false, bt: 0, tick: 0, stacks: gst });
+      if (G.gas.length > 70) G.gas.shift();
+    }
   } else {
     const spd = p.spd * p.stats.speed;
     vx = ix * spd; vy = iy * spd;
@@ -206,9 +392,9 @@ function updatePlayer(dt) {
         const a = p.aimAng + U.rand(-W.spread, W.spread);
         G.pBullets.push({
           x: mzx, y: mzy, vx: Math.cos(a) * W.spd, vy: Math.sin(a) * W.spd,
-          dmg: W.dmg, r: W.size, life: W.life, color: W.color,
+          dmg: W.dmg * p.stats.dmg, r: W.size, life: W.life, color: W.color,
           pierceLeft, bounceLeft: p.stats.bounce,
-          rail: !!W.pierce, boom: W.boom || 0, boomDmg: W.boomDmg || 0,
+          rail: !!W.pierce, boom: W.boom || 0, boomDmg: (W.boomDmg || 0) * p.stats.dmg,
           hit: pierceLeft > 0 ? new Set() : null, dead: false,
         });
       }
@@ -239,13 +425,14 @@ function swordSwing(p, W) {
   });
   Sfx.shoot('sword');
   let hitAny = false;
+  const kb = 170 + 280 * ic('spinach'); // spinach: send them flying
   for (const e of G.enemies) {
     if (e.warp > 0 || e.dead) continue;
     if (U.dist(p.x, p.y, e.x, e.y) > W.range + e.r) continue;
     if (Math.abs(U.adiff(U.ang(p.x, p.y, e.x, e.y), ang)) > W.arc / 2) continue;
-    Ent.damageEnemy(G, e, W.dmg);
-    e.kbx += Math.cos(ang) * 170;
-    e.kby += Math.sin(ang) * 170;
+    Ent.damageEnemy(G, e, W.dmg * p.stats.dmg);
+    e.kbx += Math.cos(ang) * kb;
+    e.kby += Math.sin(ang) * kb;
     hitAny = true;
   }
   for (const b of G.eBullets) { // parry incoming darts
@@ -280,6 +467,17 @@ function hurtPlayer(d) {
   G.hurtFlash = 0.35;
   Sfx.hurt();
   Ent.burst(G, p.x, p.y, '#f87171', 12, 180, 0.4, 3);
+  const vd = ic('voodoo'); // voodoo doll: the room shares your pain
+  if (vd) {
+    const room = MapGen.roomAt(G.level, p.x, p.y);
+    if (room) {
+      for (const e of G.enemies) {
+        if (e.roomIdx !== room.idx || e.warp > 0 || e.dead) continue;
+        Ent.damageEnemy(G, e, 2 * vd);
+        Ent.burst(G, e.x, e.y, '#a78bfa', 5, 110, 0.35, 2.5);
+      }
+    }
+  }
   if (p.hp <= 0) die();
 }
 
@@ -347,12 +545,16 @@ function lockRoom(room) {
     Ent.showBanner(G, 'THE TIKI COLOSSUS', 'the island guardian wakes — strike it down');
   } else {
     let budget = 4 + Math.round(G.floor * 1.9);
-    const kinds = ['viper', 'tribesman'];
-    if (G.floor >= 2) kinds.push('totem');
-    if (G.floor >= 3) kinds.push('constrictor');
-    if (G.floor >= 4) kinds.push('hunter', 'brood');
-    if (G.floor >= 5) kinds.push('shaman', 'viper');
-    if (G.floor >= 6) kinds.push('headhunter');
+    let kinds;
+    if (G.level.area === 'coast') {
+      kinds = ['viper', 'tribesman'];
+      if (G.floor >= 2) kinds.push('totem');
+      if (G.floor >= 3) kinds.push('constrictor');
+    } else { // the deep jungle has its own horrors
+      kinds = ['viper', 'spearman', 'archer', 'primate', 'spearman', 'archer', 'primate'];
+      if (G.floor >= 5) kinds.push('hunter', 'brood', 'shaman');
+      if (G.floor >= 6) kinds.push('headhunter', 'totem', 'constrictor');
+    }
     let n = 0, guard = 80;
     while (budget > 0 && n < 13 && guard-- > 0) {
       const k = U.pick(kinds);
@@ -413,6 +615,8 @@ function updatePBullets(dt) {
             b.hit.add(e.id);
           }
           Ent.damageEnemy(G, e, b.dmg);
+          const gp = ic('gunpowder'); // chance of a shrapnel burst
+          if (gp && U.chance(Math.min(0.1 + 0.08 * (gp - 1), 0.6))) shrapnel(b.x, b.y, gp, e.id);
           const ka = Math.atan2(b.vy, b.vx);
           e.kbx += Math.cos(ka) * 90;
           e.kby += Math.sin(ka) * 90;
@@ -421,6 +625,11 @@ function updatePBullets(dt) {
           else if (b.pierceLeft > 0) b.pierceLeft--;
           else b.dead = true;
           if (b.dead) break;
+        }
+      }
+      if (G.gas.length) { // gunfire ignites fuel
+        for (const g of G.gas) {
+          if (!g.burn && g.fuse === undefined && U.dist(b.x, b.y, g.x, g.y) < g.r + b.r) g.fuse = 0;
         }
       }
     }
@@ -456,8 +665,19 @@ function updateEBullets(dt) {
 
 function contacts() {
   const p = G.player;
+  const cb = ic('cannonball');
   for (const e of G.enemies) {
-    if (e.warp > 0) continue;
+    if (e.warp > 0 || e.dead) continue;
+    if (cb && p.dashT > 0 && e.lastDash !== G.dashId &&
+        U.dist(e.x, e.y, p.x, p.y) < e.r + p.r) { // cannonball: roll right through them
+      e.lastDash = G.dashId;
+      Ent.damageEnemy(G, e, cb * p.stats.dmg);
+      const a = U.ang(p.x, p.y, e.x, e.y);
+      e.kbx += Math.cos(a) * 300;
+      e.kby += Math.sin(a) * 300;
+      Ent.burst(G, e.x, e.y, '#94a3b8', 6, 140, 0.3, 2.5);
+      continue;
+    }
     if (p.invuln <= 0 && U.dist(e.x, e.y, p.x, p.y) < e.r + p.r * 0.8) {
       hurtPlayer(1);
       const a = U.ang(e.x, e.y, p.x, p.y);
@@ -499,12 +719,7 @@ function updatePickups(dt) {
       pk.dead = true;
       Sfx.pickup();
       if (pk.kind === 'item') {
-        const it = Ent.ITEMS[pk.val];
-        it.apply(p);
-        p.itemCounts[pk.val] = (p.itemCounts[pk.val] || 0) + 1;
-        Sfx.weaponGet();
-        Ent.showBanner(G, it.name, it.desc);
-        Ent.burst(G, pk.x, pk.y, it.color, 16, 160, 0.5, 3);
+        grantItem(pk.val, pk.x, pk.y);
       } else if (pk.kind === 'credit') {
         G.credits += pk.val;
         Ent.addText(G, pk.x, pk.y - 10, '+' + pk.val + 'g', '#fbbf24', 12);
@@ -607,7 +822,8 @@ function render() {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
-  ctx.fillStyle = '#08141f'; // the sea
+  const pal = G.level ? (PALETTES[G.level.area] || PALETTES.coast) : PALETTES.coast;
+  ctx.fillStyle = pal.sea;
   ctx.fillRect(0, 0, VW, VH);
 
   if (G.state === 'menu' || !G.level) {
@@ -622,11 +838,13 @@ function render() {
   ctx.translate(Math.round(-G.cam.x + shx), Math.round(-G.cam.y + shy));
   drawTiles();
   drawPad();
+  drawGas();
   drawGates();
   drawPedestal();
   for (const pk of G.pickups) Ent.drawPickup(ctx, G, pk);
   for (const e of G.enemies) Ent.drawEnemy(ctx, G, e);
   if (G.state !== 'dead') Ent.drawPlayer(ctx, G);
+  drawParrot();
   drawSlashes();
   drawBullets();
   drawFx();
@@ -642,6 +860,10 @@ function render() {
 
   ctx.fillStyle = vignette;
   ctx.fillRect(0, 0, VW, VH);
+  if (G.level && G.level.area === 'deep') { // the gloom of the deep jungle
+    ctx.fillStyle = 'rgba(3,10,5,0.2)';
+    ctx.fillRect(0, 0, VW, VH);
+  }
   if (G.hurtFlash > 0) {
     ctx.fillStyle = 'rgba(220,38,38,' + (G.hurtFlash * 0.5) + ')';
     ctx.fillRect(0, 0, VW, VH);
@@ -651,8 +873,10 @@ function render() {
   drawMinimap();
   drawBossBar();
   drawBanner();
+  drawSplash();
 
   if (G.state === 'pause') drawPause();
+  if (G.state === 'levelup') drawLevelUp();
   if (G.state === 'dead') drawDead();
   if (G.state === 'trans') {
     const t = G.trans.t;
@@ -687,18 +911,41 @@ function drawStars() {
   }
 }
 
-const FLOOR_TINT = { // two ground shades per room type, picked by tile hash
-  start: ['#2e2716', '#352d19'],     // sandy landing
-  combat: ['#16240e', '#1a2a12'],    // jungle floor
-  treasure: ['#2b2210', '#241d0d'],  // golden grotto
-  medbay: ['#182611', '#1d2c15'],    // sheltered camp
-  exit: ['#26200f', '#2b2513'],      // dig site clearing
-  boss: ['#260f0f', '#2c1313'],      // scorched shrine
+const PALETTES = {
+  coast: { // bright shoreline jungle
+    floor: {
+      start: ['#2e2716', '#352d19'],     // sandy landing
+      combat: ['#16240e', '#1a2a12'],    // jungle floor
+      treasure: ['#2b2210', '#241d0d'],  // golden grotto
+      medbay: ['#182611', '#1d2c15'],    // sheltered camp
+      exit: ['#26200f', '#2b2513'],      // dig site clearing
+      boss: ['#260f0f', '#2c1313'],      // scorched shrine
+    },
+    corridor: ['#241a10', '#2a1f13'],
+    sea: '#08141f', wave: '#1d3d5c',
+    wall: '#0d2113', clumpA: '#143018', clumpB: '#0a1a0e', fringe: '#2f7d3a',
+    grass: '#3f6b2a',
+  },
+  deep: { // the deep jungle: the canopy swallows the sun
+    floor: {
+      start: ['#13200e', '#16240f'],
+      combat: ['#0c1607', '#0e1a09'],
+      treasure: ['#1f1a0c', '#241d0d'],
+      medbay: ['#101c0c', '#13200e'],
+      exit: ['#1a160b', '#1f1a0d'],
+      boss: ['#1b0c0c', '#200f0f'],
+    },
+    corridor: ['#15100a', '#19130c'],
+    sea: '#050d13', wave: '#10293d',
+    wall: '#06120a', clumpA: '#0a1c10', clumpB: '#040d07', fringe: '#1c5a2e',
+    grass: '#27521f',
+  },
 };
-const CORRIDOR_TINT = ['#241a10', '#2a1f13']; // dirt trails
 
 function drawTiles() {
   const lvl = G.level;
+  const pal = PALETTES[lvl.area] || PALETTES.coast;
+  const deep = lvl.area === 'deep';
   const tx0 = Math.max(0, Math.floor(G.cam.x / TILE) - 1);
   const ty0 = Math.max(0, Math.floor(G.cam.y / TILE) - 1);
   const tx1 = Math.min(lvl.W - 1, Math.ceil((G.cam.x + VW) / TILE) + 1);
@@ -710,11 +957,11 @@ function drawTiles() {
       const h = U.hash2(tx, ty);
       if (v === T_FLOOR || v === T_EXIT || v === T_CRATE) {
         const ri = lvl.roomOf[ty * lvl.W + tx];
-        const shades = ri >= 0 ? (FLOOR_TINT[lvl.rooms[ri].type] || FLOOR_TINT.combat) : CORRIDOR_TINT;
+        const shades = ri >= 0 ? (pal.floor[lvl.rooms[ri].type] || pal.floor.combat) : pal.corridor;
         ctx.fillStyle = shades[h > 0.5 ? 1 : 0];
         ctx.fillRect(px, py, TILE, TILE);
         if (h < 0.06) { // grass tuft
-          ctx.strokeStyle = '#3f6b2a';
+          ctx.strokeStyle = pal.grass;
           ctx.lineWidth = 1.5;
           ctx.beginPath();
           ctx.moveTo(px + 14, py + 22); ctx.lineTo(px + 11, py + 14);
@@ -727,21 +974,27 @@ function drawTiles() {
           ctx.arc(px + 11, py + 18, 2, 0, TAU);
           ctx.arc(px + 20, py + 12, 1.5, 0, TAU);
           ctx.fill();
-        } else if (h < 0.105) { // jungle flower
-          ctx.fillStyle = '#f472b6';
-          ctx.beginPath(); ctx.arc(px + 16, py + 14, 2, 0, TAU); ctx.fill();
-          ctx.fillStyle = '#fde047';
-          ctx.beginPath(); ctx.arc(px + 16, py + 14, 0.8, 0, TAU); ctx.fill();
+        } else if (h < 0.105) {
+          if (deep) { // pale glowing mushrooms instead of flowers
+            ctx.fillStyle = '#94a3b8';
+            ctx.beginPath(); ctx.arc(px + 15, py + 15, 2.2, 0, TAU); ctx.arc(px + 20, py + 17, 1.5, 0, TAU); ctx.fill();
+            ctx.fillStyle = 'rgba(165,243,252,0.5)';
+            ctx.beginPath(); ctx.arc(px + 15, py + 15, 1, 0, TAU); ctx.fill();
+          } else { // jungle flower
+            ctx.fillStyle = '#f472b6';
+            ctx.beginPath(); ctx.arc(px + 16, py + 14, 2, 0, TAU); ctx.fill();
+            ctx.fillStyle = '#fde047';
+            ctx.beginPath(); ctx.arc(px + 16, py + 14, 0.8, 0, TAU); ctx.fill();
+          }
         } else if (h < 0.16) { // leaf litter
           ctx.fillStyle = 'rgba(0,0,0,0.18)';
           ctx.fillRect(px + 6, py + 6, TILE - 12, TILE - 12);
         }
         if (v === T_EXIT) { // disturbed earth at the dig site
-          ctx.fillStyle = '#1f1709';
+          ctx.fillStyle = deep ? '#171107' : '#1f1709';
           ctx.fillRect(px + 1, py + 1, TILE - 2, TILE - 2);
         }
-        if (v === T_CRATE) { // wooden cargo crate
-          const hp = lvl.crates.get(tx + ',' + ty) || 0;
+        if (v === T_CRATE) { // wooden cargo crate (one good hit splinters it)
           ctx.fillStyle = '#5b3a1a';
           ctx.fillRect(px + 3, py + 3, TILE - 6, TILE - 6);
           ctx.strokeStyle = '#8a5a2b';
@@ -752,25 +1005,23 @@ function drawTiles() {
           ctx.moveTo(px + 3, py + 3); ctx.lineTo(px + TILE - 3, py + TILE - 3);
           ctx.moveTo(px + TILE - 3, py + 3); ctx.lineTo(px + 3, py + TILE - 3);
           ctx.stroke();
-          if (hp < 3) { // splintered
-            ctx.strokeStyle = '#d6b25c';
-            ctx.beginPath();
-            ctx.moveTo(px + 8, py + 6); ctx.lineTo(px + 14, py + 16); ctx.lineTo(px + 10, py + 25);
-            if (hp < 2) { ctx.moveTo(px + 24, py + 8); ctx.lineTo(px + 18, py + 18); }
-            ctx.stroke();
-          }
         }
       } else if (v === T_WALL) { // dense jungle foliage
-        ctx.fillStyle = '#0d2113';
+        ctx.fillStyle = pal.wall;
         ctx.fillRect(px, py, TILE, TILE);
         if (h < 0.5) { // canopy clumps
-          ctx.fillStyle = h < 0.25 ? '#143018' : '#0a1a0e';
+          ctx.fillStyle = h < 0.25 ? pal.clumpA : pal.clumpB;
           ctx.beginPath();
           ctx.arc(px + 8 + h * 20, py + 8 + h * 14, 6, 0, TAU);
           ctx.arc(px + 22 - h * 10, py + 20, 5, 0, TAU);
           ctx.fill();
         }
-        ctx.fillStyle = '#2f7d3a'; // leafy fringe facing the clearing
+        if (deep && h > 0.5 && h < 0.53 && Math.sin(G.time * 2.2 + h * 80) > -0.4) {
+          ctx.fillStyle = '#fde047'; // something watches from the thicket
+          ctx.fillRect(px + 11, py + 14, 2.5, 2.5);
+          ctx.fillRect(px + 18, py + 14, 2.5, 2.5);
+        }
+        ctx.fillStyle = pal.fringe; // leafy fringe facing the clearing
         const fl = (ox, oy) => {
           const nx = tx + ox, ny = ty + oy;
           if (nx < 0 || ny < 0 || nx >= lvl.W || ny >= lvl.H) return false;
@@ -783,7 +1034,7 @@ function drawTiles() {
         if (fl(-1, 0)) ctx.fillRect(px, py, 2, TILE);
       } else { // open water around the isle
         if (h < 0.08) {
-          ctx.strokeStyle = '#1d3d5c';
+          ctx.strokeStyle = pal.wave;
           ctx.lineWidth = 1.5;
           const wy = py + 8 + h * 180;
           ctx.beginPath();
@@ -794,6 +1045,51 @@ function drawTiles() {
       }
     }
   }
+}
+
+function drawGas() {
+  for (const g of G.gas) {
+    ctx.fillStyle = g.burn ? 'rgba(120,80,10,0.5)' : 'rgba(70,80,25,0.45)';
+    ctx.beginPath(); ctx.ellipse(g.x, g.y, g.r, g.r * 0.7, 0, 0, TAU); ctx.fill();
+    if (g.burn) {
+      ctx.globalCompositeOperation = 'lighter';
+      const fl = 0.5 + 0.5 * Math.sin(G.time * 18 + g.x);
+      ctx.globalAlpha = 0.5;
+      ctx.fillStyle = '#fb923c';
+      ctx.beginPath(); ctx.ellipse(g.x, g.y - 3, g.r * 0.8, g.r * (0.8 + fl * 0.5), 0, 0, TAU); ctx.fill();
+      ctx.fillStyle = '#fde047';
+      ctx.globalAlpha = 0.6;
+      ctx.beginPath(); ctx.ellipse(g.x, g.y - 4, g.r * 0.4, g.r * (0.5 + fl * 0.4), 0, 0, TAU); ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+    } else {
+      ctx.fillStyle = 'rgba(190,210,90,0.25)'; // oily sheen
+      ctx.beginPath(); ctx.ellipse(g.x - 2, g.y - 2, g.r * 0.35, g.r * 0.22, 0.6, 0, TAU); ctx.fill();
+    }
+  }
+}
+
+function drawParrot() {
+  const pr = G.parrot;
+  if (!pr || !ic('parrot')) return;
+  ctx.save();
+  ctx.translate(pr.x, pr.y);
+  if (pr.mode === 'dive') ctx.rotate(Math.sin(G.time * 30) * 0.2);
+  const flap = Math.sin(pr.flap) * 4;
+  ctx.fillStyle = '#16a34a'; // wings
+  ctx.beginPath();
+  ctx.ellipse(-3, -flap, 5, 2.2, -0.5, 0, TAU);
+  ctx.ellipse(3, -flap, 5, 2.2, 0.5, 0, TAU);
+  ctx.fill();
+  ctx.fillStyle = '#ef4444'; // body
+  ctx.beginPath(); ctx.ellipse(0, 0, 3.5, 4.5, 0, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#fbbf24'; // beak
+  ctx.beginPath();
+  ctx.moveTo(0, -4); ctx.lineTo(3.5, -6); ctx.lineTo(1, -2);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#1c1917';
+  ctx.beginPath(); ctx.arc(1, -3.5, 0.8, 0, TAU); ctx.fill();
+  ctx.restore();
 }
 
 function drawPad() { // X marks the spot
@@ -1025,6 +1321,14 @@ function drawHUD() {
       ctx.strokeRect(x, 14, 14, 20);
     }
   }
+  // experience toward the next boon
+  ctx.fillStyle = '#1c1408';
+  ctx.fillRect(16, 38, 130, 4);
+  ctx.fillStyle = '#a3e635';
+  ctx.fillRect(16, 38, 130 * U.clamp(G.xp / G.xpNeed, 0, 1), 4);
+  ctx.font = font(11);
+  ctx.fillStyle = '#a3e635';
+  ctx.fillText('LV ' + G.plvl, 152, 44);
   // weapon + powder
   const gun = p.guns[p.gunIndex];
   const W = WEAPONS[gun.id];
@@ -1180,6 +1484,108 @@ function drawBanner() {
     ctx.fillText(bn.sub, VW / 2, VH * 0.24 + 28);
   }
   ctx.globalAlpha = 1;
+  ctx.textAlign = 'left';
+}
+
+// the treasure title card: slams in, shines, lingers
+function drawSplash() {
+  const s = G.splash;
+  if (!s) return;
+  const it = Ent.ITEMS[s.id];
+  const t = s.t;
+  const inT = U.clamp(t / 0.22, 0, 1);
+  const out = t > 1.9 ? U.clamp((2.4 - t) / 0.5, 0, 1) : 1;
+  const a = inT * out;
+  const scale = 1 + (1 - inT) * (1 - inT) * 1.6; // slam from large
+  const cy = VH * 0.6;
+  ctx.fillStyle = 'rgba(10,7,2,' + 0.6 * a + ')'; // banner band
+  ctx.fillRect(0, cy - 52, VW, 104);
+  ctx.fillStyle = 'rgba(251,191,36,' + 0.5 * a + ')';
+  ctx.fillRect(0, cy - 52, VW, 2);
+  ctx.fillRect(0, cy + 50, VW, 2);
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.translate(VW / 2, cy);
+  ctx.scale(scale, scale);
+  ctx.textAlign = 'center';
+  const name = it.name + (s.count > 1 ? '  x' + s.count : '');
+  ctx.save(); // relic icon above the name
+  ctx.translate(0, -30);
+  ctx.scale(1.4, 1.4);
+  ctx.shadowColor = it.color;
+  ctx.shadowBlur = 12;
+  Ent.ITEMS && (function () {
+    ctx.strokeStyle = '#a16207';
+    ctx.fillStyle = '#1a130a';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0, 0, 10, 0, TAU); ctx.fill(); ctx.stroke();
+  })();
+  ctx.restore();
+  ctx.save();
+  ctx.translate(0, -30);
+  ctx.scale(1.4, 1.4);
+  Ent.drawItemGlyph ? Ent.drawItemGlyph(ctx, s.id, it.color) : null;
+  ctx.restore();
+  ctx.font = font(30);
+  ctx.fillStyle = it.color;
+  ctx.shadowColor = it.color;
+  ctx.shadowBlur = 22;
+  ctx.fillText(name, 0, 8);
+  if (t > 0.22 && t < 0.6) { // shine flash over the name
+    ctx.globalAlpha = a * (1 - (t - 0.22) / 0.38);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(name, 0, 8);
+    ctx.globalAlpha = a;
+  }
+  ctx.shadowBlur = 0;
+  ctx.font = font(14);
+  ctx.fillStyle = '#f5e9d0';
+  ctx.fillText(it.desc, 0, 30);
+  if (s.count > 1) {
+    ctx.fillStyle = '#d6b25c';
+    ctx.fillText('stacked: ' + it.stack, 0, 46);
+  }
+  ctx.restore();
+  ctx.textAlign = 'left';
+}
+
+function drawLevelUp() {
+  ctx.fillStyle = 'rgba(4,6,3,0.7)';
+  ctx.fillRect(0, 0, VW, VH);
+  ctx.textAlign = 'center';
+  ctx.font = font(34);
+  ctx.fillStyle = '#fde68a';
+  ctx.shadowColor = '#f59e0b';
+  ctx.shadowBlur = 20;
+  ctx.fillText('LEVEL ' + G.plvl + ' — CHOOSE A BOON', VW / 2, VH * 0.3);
+  ctx.shadowBlur = 0;
+  ctx.font = font(13, '');
+  ctx.fillStyle = '#a8a29e';
+  ctx.fillText('click a card, or press 1 / 2 / 3', VW / 2, VH * 0.3 + 26);
+  const rects = lvlCardRects();
+  for (let i = 0; i < 3; i++) {
+    const o = G.lvlChoices[i];
+    if (!o) continue;
+    const r = rects[i];
+    const hover = Input.mx >= r.x && Input.mx <= r.x + r.w && Input.my >= r.y && Input.my <= r.y + r.h;
+    const lift = hover ? -6 : 0;
+    ctx.fillStyle = hover ? '#241a0e' : '#1a130a';
+    ctx.strokeStyle = hover ? o.color : '#a16207';
+    ctx.lineWidth = hover ? 3 : 2;
+    ctx.fillRect(r.x, r.y + lift, r.w, r.h);
+    ctx.strokeRect(r.x, r.y + lift, r.w, r.h);
+    ctx.fillStyle = o.color;
+    ctx.fillRect(r.x + r.w / 2 - 14, r.y + lift + 18, 28, 8);
+    ctx.font = font(16);
+    ctx.fillStyle = '#f5e9d0';
+    ctx.fillText(o.name, r.x + r.w / 2, r.y + lift + 56);
+    ctx.font = font(13, '');
+    ctx.fillStyle = '#d6b25c';
+    ctx.fillText(o.desc, r.x + r.w / 2, r.y + lift + 80);
+    ctx.font = font(12);
+    ctx.fillStyle = '#78716c';
+    ctx.fillText('[' + (i + 1) + ']', r.x + r.w / 2, r.y + lift + r.h - 12);
+  }
   ctx.textAlign = 'left';
 }
 

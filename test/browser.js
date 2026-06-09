@@ -56,6 +56,11 @@ const server = http.createServer((req, res) => {
   await page.keyboard.down('KeyD');
   await page.waitForTimeout(1200);
   await page.keyboard.up('KeyD');
+  await page.evaluate(() => { // dismiss any pending level-up so the shot shows combat
+    const G = window.Game.G;
+    if (G.state === 'levelup') { G.pendingLevels = 0; G.state = 'play'; }
+  });
+  await page.waitForTimeout(150);
   await page.screenshot({ path: path.join(shots, '3-combat.png') });
   await page.mouse.up();
 
@@ -68,8 +73,17 @@ const server = http.createServer((req, res) => {
     G.player.y = room.cy + 96;
   });
   await page.waitForTimeout(2600);
-  await page.evaluate(() => { window.Game.G.player.hp = window.Game.G.player.maxHp; });
+  await page.evaluate(() => {
+    const G = window.Game.G;
+    G.player.hp = G.player.maxHp;
+    if (G.state === 'levelup') { G.pendingLevels = 0; G.state = 'play'; }
+  });
   await page.waitForTimeout(2400);
+  await page.evaluate(() => {
+    const G = window.Game.G;
+    if (G.state === 'levelup') { G.pendingLevels = 0; G.state = 'play'; }
+  });
+  await page.waitForTimeout(150);
   await page.screenshot({ path: path.join(shots, '4-boss.png') });
 
   // art showcase: one of each enemy + all stat items in the start room
@@ -79,21 +93,60 @@ const server = http.createServer((req, res) => {
     const r = G.level.rooms[0];
     G.player.x = r.cx;
     G.player.y = r.cy + 70;
-    const kinds = ['viper', 'tribesman', 'totem', 'constrictor', 'hunter', 'brood', 'shaman', 'headhunter'];
-    kinds.forEach((k, i) => {
-      const e = Ent.spawn(G, k, r.cx - 160 + i * 46, r.cy - 60, r.idx);
+    const kinds = [
+      ['viper', 'tribesman', 'totem', 'constrictor', 'hunter', 'brood'],
+      ['shaman', 'headhunter', 'primate', 'archer', 'spearman'],
+    ];
+    kinds.forEach((row, ri) => row.forEach((k, i) => {
+      const e = Ent.spawn(G, k, r.cx - (row.length - 1) * 23 + i * 46, r.cy - 88 + ri * 44, r.idx);
       e.warp = 0;
       e.spd = 0; // hold still for the photo
       e.fireCD = 99;
-    });
+    }));
     Ent.ITEM_IDS.forEach((id, i) => {
-      Ent.spawnPickup(G, r.cx - 115 + i * 46, r.cy + 10, 'item', id);
+      Ent.spawnPickup(G, r.cx - (Ent.ITEM_IDS.length - 1) * 21 + i * 42, r.cy + 4, 'item', id);
     });
     G.banner = null;
+    G.splash = null;
   });
   await page.mouse.move(640, 200);
   await page.waitForTimeout(700);
   await page.screenshot({ path: path.join(shots, '5-showcase.png') });
+
+  // the deep jungle (isle 4+): darker tileset, new natives
+  await page.evaluate(() => {
+    const { G, loadFloor } = window.Game;
+    loadFloor(4);
+    const room = G.level.rooms.find((r) => r.type === 'combat') || G.level.rooms[1];
+    G.player.x = room.cx;
+    G.player.y = room.cy;
+    G.splash = null;
+  });
+  await page.waitForTimeout(1600);
+  await page.evaluate(() => {
+    const G = window.Game.G;
+    G.player.hp = G.player.maxHp;
+    if (G.state === 'levelup') { G.pendingLevels = 0; G.state = 'play'; }
+  });
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: path.join(shots, '6-deep.png') });
+
+  // the level-up boon cards
+  await page.evaluate(() => {
+    const G = window.Game.G;
+    G.xp = G.xpNeed; // force a level
+    G.pendingLevels = 1;
+  });
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(shots, '7-levelup.png') });
+  await page.evaluate(() => { // pick a boon to resume
+    const G = window.Game.G;
+    if (G.state === 'levelup' && G.lvlChoices[0]) {
+      G.lvlChoices[0].apply(G.player);
+      G.pendingLevels = 0;
+      G.state = 'play';
+    }
+  });
 
   const state = await page.evaluate(() => ({
     state: window.Game.G.state,

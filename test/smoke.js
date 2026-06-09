@@ -94,6 +94,14 @@ function pump(frames) {
   }
 }
 
+// pump frames, auto-picking the first boon whenever a level-up interrupts
+function settle(frames) {
+  for (let i = 0; i < frames; i++) {
+    pump(1);
+    if (G && G.state === 'levelup') { key('keydown', 'Digit1'); key('keyup', 'Digit1'); }
+  }
+}
+
 // ── 1) level generation fuzz ──
 
 console.log('level generation fuzz (60 floors)...');
@@ -143,6 +151,11 @@ for (let floor = 1; floor <= 60; floor++) {
   // pad tiles really are T_EXIT
   const ptx = Math.floor(lvl.padCenter.x / TILE), pty = Math.floor(lvl.padCenter.y / TILE);
   assert(lvl.grid[(pty - 1) * lvl.W + (ptx - 1)] === T_EXIT, `floor ${floor}: pad carved`);
+  // crates splinter in one hit
+  for (const hp of lvl.crates.values()) assert(hp === 1, `floor ${floor}: crates are one-hit`);
+  // the deep jungle begins past the first colossus
+  const f = ((floor - 1) % 12) + 1;
+  assert(lvl.area === (f <= 3 ? 'coast' : 'deep'), `floor ${floor}: area assignment`);
 }
 console.log('  ok');
 
@@ -155,6 +168,8 @@ mouse('mousedown'); mouse('mouseup');
 pump(2);
 assert(G.state === 'play', 'click starts run');
 assert(G.player && G.level, 'player + level exist');
+assert(Object.keys(G.player.itemCounts).length === 1, 'voyage begins with a treasure');
+assert(G.splash && G.splash.t < 2.4, 'starting treasure splash shown');
 
 console.log('wander + combat on floor 1...');
 key('keydown', 'KeyD');
@@ -166,7 +181,7 @@ for (let i = 0; i < 14; i++) {
   G.player.x = room.cx;
   G.player.y = room.cy;
   mouse('mousemove', 200 + (i * 137) % 800, 100 + (i * 211) % 500);
-  pump(90); // ~1.5s per room
+  settle(90); // ~1.5s per room, auto-picking any level-up boons
   if (room.locked) locksSeen++;
   enemiesSeen = Math.max(enemiesSeen, G.enemies.length);
   if (i % 4 === 0) { key('keydown', 'Space'); key('keyup', 'Space'); } // dash
@@ -187,33 +202,92 @@ Ent.spawnPickup(G, G.player.x, G.player.y, 'heart', 1);
 Ent.spawnPickup(G, G.player.x, G.player.y, 'credit', 3);
 Ent.spawnPickup(G, G.player.x, G.player.y, 'cell', 1);
 const creditsBefore = G.credits, hpBefore = G.player.hp;
-pump(30);
+settle(30);
 assert(G.credits > creditsBefore, 'credits collected');
 assert(G.player.hp > hpBefore, 'heart collected');
 
-console.log('stat upgrade items...');
+console.log('level-up boons...');
+{
+  const p = G.player;
+  settle(5); // flush any pending boons first
+  G.xp = G.xpNeed - 1;
+  const lvlBefore = G.plvl;
+  const v = Ent.spawn(G, 'viper', p.x + 60, p.y, 0);
+  v.warp = 0;
+  p.invuln = 9;
+  Ent.damageEnemy(G, v, 1e9); // the kill tips the XP over
+  pump(2);
+  assert(G.state === 'levelup', 'level-up triggered (state=' + G.state + ')');
+  assert(G.lvlChoices.length === 3, 'three boons offered');
+  const snap = JSON.stringify([p.stats, p.maxHp]);
+  key('keydown', 'Digit1'); key('keyup', 'Digit1');
+  pump(2);
+  assert(G.plvl === lvlBefore + 1, 'level increased');
+  assert(G.state === 'play', 'play resumes after the choice');
+  assert(JSON.stringify([p.stats, p.maxHp]) !== snap, 'a stat improved');
+}
+
+console.log('treasure items (stackable buffs)...');
 {
   const p = G.player;
   p.x = G.level.rooms[0].cx;
   p.y = G.level.rooms[0].cy;
   p.invuln = 9;
-  const before = {
-    fr: p.stats.fireRate, sp: p.stats.speed, dc: p.stats.dashCD,
-    pierce: p.stats.pierce, bounce: p.stats.bounce, maxHp: p.maxHp,
-  };
   const ids = vm.runInContext('Ent.ITEM_IDS', sandbox);
-  assert(ids.length === 6, 'six item types defined');
+  assert(ids.length === 8, 'eight treasures defined');
   for (const id of ids) {
     Ent.spawnPickup(G, p.x, p.y, 'item', id);
-    pump(3);
+    settle(3);
   }
-  assert(p.stats.fireRate > before.fr, 'fire rate item applied');
-  assert(p.stats.speed > before.sp, 'move speed item applied');
-  assert(p.stats.dashCD < before.dc, 'dash recharge item applied');
-  assert(p.stats.pierce === before.pierce + 1, 'pierce item applied');
-  assert(p.stats.bounce === before.bounce + 1, 'bounce item applied');
-  assert(p.maxHp === before.maxHp + 1, 'hull item applied');
-  assert(Object.keys(p.itemCounts).length === 6, 'item counts tracked for HUD');
+  for (const id of ids) assert(p.itemCounts[id] >= 1, 'collected ' + id);
+  assert(G.splash !== null, 'item splash card shown on pickup');
+
+  // voodoo doll: getting hit hurts every foe in the room
+  const v = Ent.spawn(G, 'viper', p.x + 80, p.y, 0);
+  v.warp = 0; v.spd = 0;
+  settle(1);
+  const vHp = v.hp;
+  p.invuln = 0;
+  Game.hurtPlayer(1);
+  assert(v.dead || v.hp < vHp, 'voodoo doll shared the pain');
+  p.invuln = 9;
+
+  // cannonball: rolling through a foe damages it
+  const v2 = Ent.spawn(G, 'viper', p.x + 60, p.y, 0);
+  v2.warp = 0; v2.spd = 0;
+  settle(1);
+  const v2Hp = v2.hp;
+  mouse('mousemove', 1200, 360); // roll to the right, through it
+  p.dashCD = 0;
+  key('keydown', 'Space'); key('keyup', 'Space');
+  settle(16);
+  assert(v2.dead || v2.hp < v2Hp, 'cannonball roll-through damage');
+
+  // gasoline: the roll leaves fuel, gunfire ignites it, fire burns foes
+  p.x = G.level.rooms[0].cx;
+  p.y = G.level.rooms[0].cy;
+  p.dashCD = 0;
+  key('keydown', 'Space'); key('keyup', 'Space');
+  settle(16);
+  assert(G.gas.length > 0, 'gasoline trail dropped');
+  const g0 = G.gas[0];
+  const v3 = Ent.spawn(G, 'viper', g0.x, g0.y, 0);
+  v3.warp = 0; v3.spd = 0;
+  G.pBullets.push({ // a shot across the puddle
+    x: g0.x - 4, y: g0.y, vx: 60, vy: 0, dmg: 1, r: 3, life: 0.5, color: '#fff',
+    pierceLeft: 0, bounceLeft: 0, rail: false, boom: 0, boomDmg: 0, hit: null, dead: false,
+  });
+  settle(50);
+  assert(G.gas.some((g) => g.burn) || G.gas.length === 0, 'fuel ignited by gunfire');
+  assert(v3.dead || v3.hp < v3.maxHp, 'fire burned the foe standing in it');
+
+  // powder parrot: dive-bombs a nearby foe
+  const v4 = Ent.spawn(G, 'viper', p.x + 90, p.y + 20, 0);
+  v4.warp = 0; v4.spd = 0;
+  settle(240); // a few seconds: orbit, dive, peck
+  assert(v4.dead || v4.hp < v4.maxHp, 'parrot dive-bombed the foe');
+  for (const e of G.enemies) Ent.damageEnemy(G, e, 1e9);
+  settle(4);
 }
 
 console.log('bullet bounce off walls...');
@@ -221,24 +295,31 @@ console.log('bullet bounce off walls...');
   // clear every enemy so nothing intercepts the test bullet (splitters may split, so repeat)
   for (let k = 0; k < 3; k++) {
     for (const e of G.enemies) Ent.damageEnemy(G, e, 1e9);
-    pump(2);
+    settle(2);
   }
   const p = G.player;
-  p.x = G.level.rooms[0].cx;
-  p.y = G.level.rooms[0].cy;
+  const r0 = G.level.rooms[0];
+  p.x = r0.cx;
+  p.y = r0.cy;
+  // fire up a column that has a wall directly above the room (door gaps align
+  // with cell centerlines, so the center column can thread through every door)
+  let fx = r0.cx;
+  for (let tx = r0.x + 1; tx < r0.x + r0.w - 1; tx++) {
+    if (MapGen.solidAt(G.level, tx, r0.y - 1)) { fx = (tx + 0.5) * TILE; break; }
+  }
   G.pBullets.length = 0;
   G.pBullets.push({
-    x: p.x, y: p.y, vx: 0, vy: -500, dmg: 1, r: 3.5, life: 5.0, color: '#fff',
+    x: fx, y: p.y, vx: 0, vy: -500, dmg: 1, r: 3.5, life: 5.0, color: '#fff',
     pierceLeft: 0, bounceLeft: 1, rail: false, boom: 0, boomDmg: 0, hit: null, dead: false,
   });
   let flipped = false;
   for (let i = 0; i < 150 && !flipped; i++) { // a wall lies within ~2.5s in any direction
-    pump(1);
+    settle(1);
     if (G.pBullets.length && G.pBullets[0].vy > 0) flipped = true;
   }
   assert(flipped, 'bullet reflected off a wall');
   assert(G.pBullets.length === 1 && G.pBullets[0].bounceLeft === 0, 'bounce charge consumed');
-  pump(320); // outlives its 5s lifetime
+  settle(320); // outlives its 5s lifetime
   assert(G.pBullets.length === 0, 'bounced bullet eventually expires');
 }
 
@@ -249,11 +330,11 @@ console.log('brood python hatches on death...');
   const sp = Ent.spawn(G, 'brood', room.cx + 64, room.cy, room.idx);
   sp.warp = 0;
   Ent.damageEnemy(G, sp, 1e9);
-  pump(2);
+  settle(2);
   assert(G.enemies.filter((e) => e.kind === 'viper' && !e.dead).length >= 2,
     'brood hatched vipers (enemies before=' + before + ')');
   for (const e of G.enemies) Ent.damageEnemy(G, e, 1e9); // clean up
-  pump(2);
+  settle(2);
 }
 
 console.log('sword slash...');
@@ -270,22 +351,22 @@ console.log('sword slash...');
   mouse('mousemove', 1000, 360); // aim right
   const kills = G.kills;
   mouse('mousedown');
-  pump(40); // a few swings at 1 dmg vs 2 hp
+  settle(40); // a few swings at 1 dmg vs 2 hp
   mouse('mouseup');
   assert(G.kills > kills, 'sword swings killed the viper');
   p.gunIndex = 0;
   for (const e of G.enemies) Ent.damageEnemy(G, e, 1e9);
-  pump(2);
+  settle(2);
 }
 
 console.log('weapon pedestal...');
 Game.loadFloor(2);
-pump(5);
+settle(5);
 if (G.pedestal) {
   const gunsBefore = G.player.guns.length;
   G.player.x = G.pedestal.x;
   G.player.y = G.pedestal.y;
-  pump(5);
+  settle(5);
   assert(G.pedestal.taken, 'pedestal taken');
   assert(G.player.guns.length > gunsBefore || G.pedestal.weaponId === null, 'weapon added');
 }
@@ -294,7 +375,7 @@ console.log('floor transition via pad...');
 G.level.rooms[G.level.exitIdx].cleared = true;
 G.player.x = G.level.padCenter.x;
 G.player.y = G.level.padCenter.y - TILE / 2;
-pump(150); // channel 0.9s + fade 1.0s
+settle(150); // channel 0.9s + fade 1.0s
 assert(G.floor === 3, 'descended to floor 3 (got ' + G.floor + ')');
 assert(G.state === 'play', 'transition resolves to play');
 
@@ -303,7 +384,7 @@ assert(G.level.isBoss, 'floor 3 flagged as boss floor');
 const bossRoom = G.level.rooms[G.level.exitIdx];
 G.player.x = bossRoom.cx;
 G.player.y = bossRoom.cy + TILE;
-pump(10);
+settle(10);
 assert(G.boss !== null, 'warden spawned');
 assert(bossRoom.locked, 'boss room locked');
 mouse('mousedown');
@@ -311,7 +392,7 @@ let sawBullets = false;
 for (let i = 0; i < 20; i++) { // ~10s of patterns, kept alive for the duration
   G.player.hp = G.player.maxHp;
   G.player.invuln = 2;
-  pump(30);
+  settle(30);
   if (G.eBullets.length > 0) sawBullets = true;
 }
 assert(sawBullets, 'boss fired bullet patterns');
@@ -322,12 +403,13 @@ G.player.hp = G.player.maxHp;
 G.player.invuln = 9;
 if (G.boss) Ent.damageEnemy(G, G.boss, 1e9);
 for (const e of G.enemies) if (!e.dead && e.roomIdx === bossRoom.idx) Ent.damageEnemy(G, e, 1e9);
-pump(5);
-assert(G.boss === null, 'warden defeated');
-assert(G.player.maxHp === Math.min(10, maxHpBefore + 1), 'hull upgrade granted');
+settle(5);
+assert(G.boss === null, 'colossus defeated');
+assert(G.player.maxHp >= Math.min(12, maxHpBefore + 1), 'health upgrade granted');
 assert(bossRoom.cleared, 'boss room cleared');
 
 console.log('death + restart...');
+settle(3);
 G.player.invuln = 0;
 G.player.hp = 1;
 Game.hurtPlayer(1);
@@ -347,7 +429,7 @@ for (let f = 1; f <= 20; f++) {
     G.player.y = room.cy;
     G.player.hp = G.player.maxHp; // keep alive; we're testing for crashes
     G.player.invuln = 2;
-    pump(45);
+    settle(45);
   }
   mouse('mouseup');
 }
