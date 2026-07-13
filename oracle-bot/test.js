@@ -1,7 +1,7 @@
-// Node unit tests for the pure logic of the Discord Debate Log Exporter.
-// Run: node discord-debate-exporter/test.js
+// Node unit tests for the pure logic of Oracle Bot.
+// Run: node oracle-bot/test.js
 const assert = require('assert');
-const lib = require('./discord-debate-exporter.user.js');
+const lib = require('./oracle-bot.user.js');
 
 const EPOCH = 1420070400000n;
 const snowflake = (isoDate) =>
@@ -87,4 +87,22 @@ check(markdown.includes('| Bob | Alice | 1 |'), 'interaction Bob->Alice counted'
 check(markdown.includes('content-bearing: 3'), 'system message excluded from content-bearing count');
 check(markdown.includes('**Messages in range:** 4'), 'all 4 messages counted in range');
 
-console.log(`\nAll ${passed} checks passed.`);
+// --- ZIP writer ---------------------------------------------------------------
+const enc = new TextEncoder();
+check(lib.crc32(enc.encode('123456789')) === 0xcbf43926, 'crc32 matches known test vector');
+check(lib.crc32(new Uint8Array(0)) === 0, 'crc32 of empty is 0');
+
+(async () => {
+  const blob = lib.createZip([
+    { name: 'debate-log.md', data: enc.encode('# hello') },
+    { name: 'images/pic.bin', data: new Uint8Array([1, 2, 3, 4, 5]) },
+  ]);
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  check(bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04, 'zip starts with local file header (PK\\x03\\x04)');
+  const eocd = bytes.length - 22; // no zip comment
+  check(bytes[eocd] === 0x50 && bytes[eocd + 1] === 0x4b && bytes[eocd + 2] === 0x05 && bytes[eocd + 3] === 0x06, 'zip ends with end-of-central-directory record');
+  const entries = bytes[eocd + 10] | (bytes[eocd + 11] << 8);
+  check(entries === 2, 'zip central directory records two entries');
+
+  console.log(`\nAll ${passed} checks passed.`);
+})();

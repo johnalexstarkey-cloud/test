@@ -1,41 +1,46 @@
 // ==UserScript==
-// @name         Discord Debate Log Exporter
+// @name         Oracle Bot — Discord Debate Log Exporter
 // @namespace    https://github.com/johnalexstarkey-cloud/test
-// @version      1.0.0
-// @description  Export a range of Discord messages (between two message links) into a Markdown debate transcript with reply threading, and bundle shared images + links into a ZIP for AI review.
+// @version      1.1.0
+// @description  Consult the machine god. Export a range of Discord messages (between two message links) into a Markdown debate transcript with reply threading, shared images, and links, bundled as a ZIP for AI review. Dependency-free — runs in Greasemonkey, Tampermonkey, and Violentmonkey.
 // @author       you
 // @match        https://discord.com/*
 // @match        https://*.discord.com/*
 // @icon         https://discord.com/assets/favicon.ico
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
+// @grant        unsafeWindow
 // @connect      cdn.discordapp.com
 // @connect      media.discordapp.net
 // @connect      discord.com
-// @require      https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js
 // @run-at       document-idle
 // ==/UserScript==
 
 /*
+ * ORACLE BOT — consult the machine god about who won the debate.
+ *
  * WHAT THIS DOES
  *  - You paste the message LINK of the first message and the LAST message of a debate
  *    (right-click a message -> "Copy Message Link").
  *  - It fetches every message in between (inclusive) using your own logged-in session.
  *  - It writes a Markdown transcript that records who replied to whom, downloads the
  *    images that were shared, and lists every link.
- *  - Everything is bundled into a single .zip you can hand to an AI for a debate review.
+ *  - Everything is bundled into a single .zip you can hand to an AI for a debate verdict.
+ *
+ * DEPENDENCY-FREE
+ *  - No @require, no external libraries. The ZIP is built by a small built-in writer,
+ *    so it works the same in Greasemonkey, Tampermonkey, and Violentmonkey.
  *
  * RATE LIMITS
- *  - Discord throttles the message-history endpoint. This script paces itself (default
- *    ~1.2s between page fetches), honours the `retry_after` value on HTTP 429, respects
- *    the X-RateLimit-Remaining/Reset-After headers, and backs off automatically. Slower
- *    is safer for your account. Nothing here is instantaneous by design.
+ *  - Discord throttles the message-history endpoint. Oracle Bot paces itself (~1.2s
+ *    between page fetches), honours `retry_after` on HTTP 429, respects the
+ *    X-RateLimit-Remaining/Reset-After headers, and backs off automatically.
  *
  * ACCOUNT RISK
  *  - Automating a user account is against Discord's Terms of Service ("self-botting")
  *    and can, in principle, get your account actioned. This tool is read-only and gentle,
- *    but the risk is non-zero. Use on debates you have legitimate access to, and consider
- *    the official Bot API route (see README) if you want a fully compliant setup.
+ *    but the risk is non-zero. See README for the official Bot API route if you want a
+ *    fully compliant setup.
  */
 
 (function () {
@@ -43,14 +48,20 @@
 
   const HAS_DOM = typeof document !== 'undefined' && typeof window !== 'undefined';
   if (HAS_DOM) {
-    if (window.__debateExporterLoaded) return;
-    window.__debateExporterLoaded = true;
+    if (window.__oracleBotLoaded) return;
+    window.__oracleBotLoaded = true;
   }
+
+  // In Firefox (Greasemonkey/Tampermonkey/Violentmonkey), page globals like
+  // webpackChunkdiscord_app live behind an Xray wrapper — reach them via unsafeWindow.
+  const pageWindow =
+    (typeof unsafeWindow !== 'undefined' && unsafeWindow) ||
+    (typeof window !== 'undefined' ? window : undefined);
 
   // ----------------------------------------------------------------------------
   // Small helpers
   // ----------------------------------------------------------------------------
-  const DISCORD_EPOCH = 1420070400000n; // 2015-01-01, for reference / snowflake math
+  const DISCORD_EPOCH = 1420070400000n; // 2015-01-01, for snowflake math
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const gmRequest =
@@ -68,7 +79,6 @@
   }
 
   function fmtDate(d) {
-    // YYYY-MM-DD HH:MM UTC
     const p = (n) => String(n).padStart(2, '0');
     return (
       `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ` +
@@ -88,12 +98,93 @@
   }
 
   // ----------------------------------------------------------------------------
+  // Minimal store-only ZIP writer (no compression, no dependencies).
+  // Produces a standard .zip openable by Windows/macOS/Linux/7-Zip.
+  // ----------------------------------------------------------------------------
+  const CRC_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      t[n] = c >>> 0;
+    }
+    return t;
+  })();
+
+  function crc32(bytes) {
+    let c = 0xffffffff;
+    for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  }
+
+  function concatBytes(parts) {
+    let len = 0;
+    for (const p of parts) len += p.length;
+    const out = new Uint8Array(len);
+    let o = 0;
+    for (const p of parts) { out.set(p, o); o += p.length; }
+    return out;
+  }
+
+  const u16 = (n) => new Uint8Array([n & 255, (n >> 8) & 255]);
+  const u32 = (n) => new Uint8Array([n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255]);
+
+  function createZip(files) {
+    // files: [{ name: string, data: Uint8Array }]
+    const enc = new TextEncoder();
+    const chunks = [];
+    const central = [];
+    let offset = 0;
+    const push = (arr) => { chunks.push(arr); offset += arr.length; };
+
+    for (const f of files) {
+      const nameBytes = enc.encode(f.name);
+      const data = f.data;
+      const crc = crc32(data);
+      const size = data.length;
+      const localOffset = offset;
+
+      const local = concatBytes([
+        u32(0x04034b50), u16(20), u16(0x0800), u16(0), // sig, ver, flags(utf8), method=store
+        u16(0), u16(0),                                 // mod time/date
+        u32(crc), u32(size), u32(size),                 // crc, compressed, uncompressed
+        u16(nameBytes.length), u16(0),                  // name len, extra len
+        nameBytes,
+      ]);
+      push(local);
+      push(data);
+
+      central.push(concatBytes([
+        u32(0x02014b50), u16(20), u16(20), u16(0x0800), u16(0),
+        u16(0), u16(0),
+        u32(crc), u32(size), u32(size),
+        u16(nameBytes.length), u16(0), u16(0),
+        u16(0), u16(0), u32(0),
+        u32(localOffset),
+        nameBytes,
+      ]));
+    }
+
+    const cdStart = offset;
+    let cdSize = 0;
+    for (const cd of central) { push(cd); cdSize += cd.length; }
+
+    push(concatBytes([
+      u32(0x06054b50), u16(0), u16(0),
+      u16(central.length), u16(central.length),
+      u32(cdSize), u32(cdStart), u16(0),
+    ]));
+
+    return new Blob(chunks, { type: 'application/zip' });
+  }
+
+  // ----------------------------------------------------------------------------
   // Auth token (from Discord's own webpack modules; localStorage fallback)
   // ----------------------------------------------------------------------------
   function getToken() {
     let token = null;
     try {
-      window.webpackChunkdiscord_app.push([
+      pageWindow.webpackChunkdiscord_app.push([
         [Math.random()],
         {},
         (req) => {
@@ -114,7 +205,6 @@
     } catch (_) {}
     if (token) return token;
 
-    // Fallback: read from a fresh iframe's localStorage (works only if not stripped).
     try {
       const iframe = document.createElement('iframe');
       document.head.appendChild(iframe);
@@ -130,7 +220,6 @@
   // ----------------------------------------------------------------------------
   async function fetchRange({ token, channelId, startId, endId }, opts, log, onProgress, shouldStop) {
     const messages = [];
-    const endBig = BigInt(endId);
     let after = (BigInt(startId) - 1n).toString(); // -1 so the start message is included
     let baseDelay = opts.requestDelay;
     let done = false;
@@ -158,10 +247,10 @@
         let body = {};
         try { body = await resp.json(); } catch (_) {}
         const wait = Math.ceil((body.retry_after ? body.retry_after * 1000 : baseDelay) + 600);
-        baseDelay = Math.min(baseDelay * 1.5, 10000); // adaptive slow-down
+        baseDelay = Math.min(baseDelay * 1.5, 10000);
         log(`Rate limited — waiting ${(wait / 1000).toFixed(1)}s (base delay now ${baseDelay}ms).`, 'warn');
         await sleep(wait);
-        continue; // retry the same page
+        continue;
       }
       if (resp.status === 401) throw new Error('401 Unauthorized — could not read your token, or it is stale. Reload Discord and try again.');
       if (resp.status === 403) throw new Error('403 Forbidden — your account cannot read this channel.');
@@ -174,17 +263,16 @@
       batch.sort((a, b) => cmpSnowflake(a.id, b.id)); // oldest -> newest
 
       for (const msg of batch) {
-        if (cmpSnowflake(msg.id, endId) > 0) { done = true; break; } // passed the end message
+        if (cmpSnowflake(msg.id, endId) > 0) { done = true; break; }
         messages.push(msg);
       }
 
       after = batch[batch.length - 1].id;
-      if (batch.length < 100) done = true; // reached the end of the channel
+      if (batch.length < 100) done = true;
 
       onProgress(messages.length);
       log(`Fetched ${messages.length} messages so far…`);
 
-      // Pace ourselves using the rate-limit headers when present.
       const remaining = resp.headers.get('x-ratelimit-remaining');
       const resetAfter = parseFloat(resp.headers.get('x-ratelimit-reset-after') || '0');
       if (remaining !== null && parseInt(remaining, 10) <= 0 && resetAfter > 0) {
@@ -208,7 +296,7 @@
     text = text.replace(/<@!?(\d+)>/g, (_, id) => '@' + (nameById[id] || 'user'));
     text = text.replace(/<#(\d+)>/g, '#channel');
     text = text.replace(/<@&(\d+)>/g, '@role');
-    text = text.replace(/<a?:(\w+):\d+>/g, ':$1:'); // custom emoji -> :name:
+    text = text.replace(/<a?:(\w+):\d+>/g, ':$1:');
     return text;
   }
 
@@ -226,12 +314,11 @@
 
   function buildTranscript(messages, meta) {
     const byId = new Map(messages.map((m) => [m.id, m]));
-    const images = []; // { url, path, filename }
-    const participants = new Map(); // id -> { name, username, count }
-    const interactions = new Map(); // "responder target" -> count
+    const images = [];
+    const participants = new Map();
+    const interactions = new Map();
     let imageIndex = 0;
 
-    // Keep normal + reply messages that actually carry content/attachments/embeds.
     const kept = messages.filter((m) => {
       const type = m.type;
       const hasBody = (m.content && m.content.trim()) ||
@@ -248,7 +335,6 @@
       const uname = author.username ? '@' + author.username : '';
       const when = fmtDate(new Date(m.timestamp || snowflakeToDate(m.id)));
 
-      // participant tally
       if (!participants.has(author.id)) {
         participants.set(author.id, { name, username: uname, count: 0 });
       }
@@ -256,14 +342,13 @@
 
       lines.push(`### [${when}] ${name} ${uname}`.trimEnd());
 
-      // reply threading
       const ref = m.message_reference && m.message_reference.message_id;
       if (ref) {
         const target = byId.get(ref) || m.referenced_message || null;
         if (target && target.author) {
           const targetName = displayName(target.author);
           lines.push(`↩ *replying to ${targetName}: "${snippet(cleanContent(target))}"*`);
-          const key = name + ' ' + targetName;
+          const key = name + ' ' + targetName;
           interactions.set(key, (interactions.get(key) || 0) + 1);
         } else {
           lines.push(`↩ *replying to a message outside the exported range*`);
@@ -274,10 +359,8 @@
       if (body) lines.push('', body, '');
       else lines.push('');
 
-      // stickers
       (m.sticker_items || []).forEach((s) => lines.push(`🏷 sticker: ${s.name}`));
 
-      // attachments (download images, list files)
       const attImgs = [];
       const attFiles = [];
       (m.attachments || []).forEach((a) => {
@@ -295,7 +378,6 @@
       attImgs.forEach((l) => lines.push(l));
       attFiles.forEach((l) => lines.push(l));
 
-      // embeds: capture pasted-image embeds + collect embed links
       const embedLinks = new Set();
       (m.embeds || []).forEach((e) => {
         if (e.url) embedLinks.add(e.url);
@@ -313,22 +395,19 @@
         }
       });
 
-      // links: from content + embeds
       const links = new Set();
       let mt;
       const contentRaw = m.content || '';
       while ((mt = URL_RE.exec(contentRaw)) !== null) links.add(mt[1]);
       embedLinks.forEach((l) => links.add(l));
-      if (links.size) {
-        [...links].forEach((l) => lines.push(`🔗 ${l}`));
-      }
+      if (links.size) [...links].forEach((l) => lines.push(`🔗 ${l}`));
 
       lines.push('', '---', '');
     }
 
-    // Header
     const header = [];
     header.push('# Debate Transcript', '');
+    header.push('*Compiled by Oracle Bot 🔮 — consult the machine god for a verdict.*', '');
     header.push(`- **Channel ID:** ${meta.channelId}`);
     if (meta.guildId && meta.guildId !== '@me') header.push(`- **Guild ID:** ${meta.guildId}`);
     header.push(`- **Range:** ${meta.rangeStart} → ${meta.rangeEnd}`);
@@ -337,7 +416,6 @@
     header.push(`- **Exported:** ${fmtDate(new Date())}`);
     header.push('');
 
-    // Participants table
     header.push('## Participants', '');
     header.push('| Participant | Username | Messages |');
     header.push('|---|---|---|');
@@ -346,7 +424,6 @@
       .forEach((p) => header.push(`| ${p.name} | ${p.username} | ${p.count} |`));
     header.push('');
 
-    // Interaction (reply) summary — who responded to whom
     if (interactions.size) {
       header.push('## Reply interactions (who responded to whom)', '');
       header.push('| Responder | Replied to | Count |');
@@ -354,7 +431,7 @@
       [...interactions.entries()]
         .sort((a, b) => b[1] - a[1])
         .forEach(([key, count]) => {
-          const [responder, target] = key.split(' ');
+          const [responder, target] = key.split(' ');
           header.push(`| ${responder} | ${target} | ${count} |`);
         });
       header.push('');
@@ -367,46 +444,57 @@
   }
 
   // ----------------------------------------------------------------------------
-  // Download images via GM_xmlhttpRequest (bypasses CORS on Discord's CDN).
+  // Image bytes: GM request (bypasses CORS), with a plain-fetch fallback.
   // ----------------------------------------------------------------------------
-  function gmFetchBlob(url) {
+  function gmFetchBytes(url) {
     return new Promise((resolve, reject) => {
-      if (!gmRequest) return reject(new Error('GM_xmlhttpRequest unavailable'));
+      if (!gmRequest) return reject(new Error('GM request unavailable'));
       gmRequest({
         method: 'GET',
         url,
         responseType: 'arraybuffer',
+        overrideMimeType: 'text/plain; charset=x-user-defined',
         timeout: 30000,
-        onload: (r) =>
-          r.status >= 200 && r.status < 300
-            ? resolve(r.response)
-            : reject(new Error('HTTP ' + r.status)),
+        onload: (r) => {
+          if (r.status < 200 || r.status >= 300) return reject(new Error('HTTP ' + r.status));
+          if (r.response && r.response.byteLength != null) {
+            resolve(new Uint8Array(r.response));
+          } else if (typeof r.responseText === 'string') {
+            const s = r.responseText;
+            const b = new Uint8Array(s.length);
+            for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 0xff;
+            resolve(b);
+          } else reject(new Error('empty response'));
+        },
         onerror: () => reject(new Error('network error')),
         ontimeout: () => reject(new Error('timeout')),
       });
     });
   }
 
-  async function downloadImages(images, zip, opts, log, onProgress, shouldStop) {
+  async function fetchBytes(url) {
+    try {
+      return await gmFetchBytes(url);
+    } catch (e) {
+      const r = await fetch(url); // works only if the CDN allows CORS
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return new Uint8Array(await r.arrayBuffer());
+    }
+  }
+
+  async function downloadImages(images, zipFiles, opts, log, onProgress, shouldStop) {
     let ok = 0, fail = 0;
     for (let i = 0; i < images.length; i++) {
       if (shouldStop()) throw new Error('Cancelled by user.');
       const img = images[i];
-      let buf = null;
+      let bytes = null;
       try {
-        buf = await gmFetchBlob(img.url);
+        bytes = await fetchBytes(img.url);
       } catch (e) {
-        if (img.proxy) {
-          try { buf = await gmFetchBlob(img.proxy); } catch (_) {}
-        }
+        if (img.proxy) { try { bytes = await fetchBytes(img.proxy); } catch (_) {} }
       }
-      if (buf) {
-        zip.file(img.path, buf);
-        ok++;
-      } else {
-        fail++;
-        log(`Could not download image: ${img.filename}`, 'warn');
-      }
+      if (bytes) { zipFiles.push({ name: img.path, data: bytes }); ok++; }
+      else { fail++; log(`Could not download image: ${img.filename}`, 'warn'); }
       onProgress(i + 1, images.length);
       await sleep(opts.imageDelay);
     }
@@ -420,6 +508,7 @@
     module.exports = {
       cmpSnowflake, snowflakeToDate, fmtDate, sanitizeFilename,
       parseMessageLink, cleanContent, displayName, snippet, buildTranscript,
+      crc32, createZip,
     };
   }
 
@@ -433,75 +522,75 @@
   // ----------------------------------------------------------------------------
   const style = document.createElement('style');
   style.textContent = `
-    #dbg-btn{position:fixed;right:16px;bottom:16px;z-index:99999;background:#5865F2;color:#fff;
+    #ob-btn{position:fixed;right:16px;bottom:16px;z-index:99999;background:#5865F2;color:#fff;
       border:none;border-radius:10px;padding:10px 14px;font:600 13px/1 sans-serif;cursor:pointer;
       box-shadow:0 4px 14px rgba(0,0,0,.4)}
-    #dbg-btn:hover{background:#4752c4}
-    #dbg-panel{position:fixed;right:16px;bottom:64px;z-index:99999;width:360px;max-height:78vh;
+    #ob-btn:hover{background:#4752c4}
+    #ob-panel{position:fixed;right:16px;bottom:64px;z-index:99999;width:360px;max-height:78vh;
       overflow:auto;background:#2b2d31;color:#dbdee1;border-radius:12px;padding:16px;
       font:13px/1.5 sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.5);display:none}
-    #dbg-panel h3{margin:0 0 6px;font-size:15px;color:#fff}
-    #dbg-panel label{display:block;margin:10px 0 4px;font-weight:600;color:#b5bac1}
-    #dbg-panel input[type=text],#dbg-panel input[type=number]{width:100%;box-sizing:border-box;
+    #ob-panel h3{margin:0 0 6px;font-size:15px;color:#fff}
+    #ob-panel label{display:block;margin:10px 0 4px;font-weight:600;color:#b5bac1}
+    #ob-panel input[type=text],#ob-panel input[type=number]{width:100%;box-sizing:border-box;
       background:#1e1f22;border:1px solid #1e1f22;border-radius:6px;color:#fff;padding:8px}
-    #dbg-panel .row{display:flex;gap:8px}
-    #dbg-panel .row>div{flex:1}
-    #dbg-panel .chk{display:flex;align-items:center;gap:8px;margin-top:10px;font-weight:600;color:#b5bac1}
-    #dbg-run{margin-top:14px;width:100%;background:#248046;color:#fff;border:none;border-radius:8px;
+    #ob-panel .row{display:flex;gap:8px}
+    #ob-panel .row>div{flex:1}
+    #ob-panel .chk{display:flex;align-items:center;gap:8px;margin-top:10px;font-weight:600;color:#b5bac1}
+    #ob-run{margin-top:14px;width:100%;background:#248046;color:#fff;border:none;border-radius:8px;
       padding:10px;font-weight:700;cursor:pointer}
-    #dbg-run:hover{background:#1a6334}
-    #dbg-run:disabled{background:#4e5058;cursor:default}
-    #dbg-cancel{margin-top:8px;width:100%;background:#3a3c41;color:#f2c4c4;border:none;border-radius:8px;
+    #ob-run:hover{background:#1a6334}
+    #ob-run:disabled{background:#4e5058;cursor:default}
+    #ob-cancel{margin-top:8px;width:100%;background:#3a3c41;color:#f2c4c4;border:none;border-radius:8px;
       padding:8px;font-weight:600;cursor:pointer;display:none}
-    #dbg-bar{height:6px;background:#1e1f22;border-radius:3px;margin-top:12px;overflow:hidden;display:none}
-    #dbg-bar>div{height:100%;width:0;background:#5865F2;transition:width .2s}
-    #dbg-log{margin-top:10px;background:#1e1f22;border-radius:6px;padding:8px;max-height:180px;
+    #ob-bar{height:6px;background:#1e1f22;border-radius:3px;margin-top:12px;overflow:hidden;display:none}
+    #ob-bar>div{height:100%;width:0;background:#5865F2;transition:width .2s}
+    #ob-log{margin-top:10px;background:#1e1f22;border-radius:6px;padding:8px;max-height:180px;
       overflow:auto;font:11px/1.5 monospace;white-space:pre-wrap}
-    #dbg-log .warn{color:#f0b232}
-    #dbg-log .err{color:#f23f43}
-    #dbg-note{margin-top:10px;font-size:11px;color:#949ba4}
+    #ob-log .warn{color:#f0b232}
+    #ob-log .err{color:#f23f43}
+    #ob-note{margin-top:10px;font-size:11px;color:#949ba4}
   `;
   document.head.appendChild(style);
 
   const btn = document.createElement('button');
-  btn.id = 'dbg-btn';
-  btn.textContent = '🗳 Debate Export';
+  btn.id = 'ob-btn';
+  btn.textContent = '🔮 Oracle Bot';
   document.body.appendChild(btn);
 
   const panel = document.createElement('div');
-  panel.id = 'dbg-panel';
+  panel.id = 'ob-panel';
   panel.innerHTML = `
-    <h3>Debate Log Exporter</h3>
-    <div style="font-size:11px;color:#949ba4">Right-click the first &amp; last message → <b>Copy Message Link</b>, paste below.</div>
+    <h3>🔮 Oracle Bot</h3>
+    <div style="font-size:11px;color:#949ba4">Right-click the first &amp; last message → <b>Copy Message Link</b>, paste below. Consult the machine god for a verdict.</div>
     <label>Start message link</label>
-    <input id="dbg-start" type="text" placeholder="https://discord.com/channels/.../.../...">
+    <input id="ob-start" type="text" placeholder="https://discord.com/channels/.../.../...">
     <label>End message link</label>
-    <input id="dbg-end" type="text" placeholder="https://discord.com/channels/.../.../...">
+    <input id="ob-end" type="text" placeholder="https://discord.com/channels/.../.../...">
     <div class="row">
       <div>
         <label>Fetch delay (ms)</label>
-        <input id="dbg-delay" type="number" value="1200" min="300" step="100">
+        <input id="ob-delay" type="number" value="1200" min="300" step="100">
       </div>
       <div>
         <label>Image delay (ms)</label>
-        <input id="dbg-imgdelay" type="number" value="400" min="0" step="50">
+        <input id="ob-imgdelay" type="number" value="400" min="0" step="50">
       </div>
     </div>
-    <label class="chk"><input id="dbg-img" type="checkbox" checked> Download shared images into the ZIP</label>
-    <button id="dbg-run">Export debate → ZIP</button>
-    <button id="dbg-cancel">Cancel</button>
-    <div id="dbg-bar"><div></div></div>
-    <div id="dbg-log"></div>
-    <div id="dbg-note">Read-only. Paces itself to respect Discord rate limits. Self-botting is against Discord ToS — use at your own discretion.</div>
+    <label class="chk"><input id="ob-img" type="checkbox" checked> Download shared images into the ZIP</label>
+    <button id="ob-run">Consult the Oracle → ZIP</button>
+    <button id="ob-cancel">Cancel</button>
+    <div id="ob-bar"><div></div></div>
+    <div id="ob-log"></div>
+    <div id="ob-note">Read-only. Paces itself to respect Discord rate limits. Self-botting is against Discord ToS — use at your own discretion.</div>
   `;
   document.body.appendChild(panel);
 
   const $ = (id) => panel.querySelector(id);
-  const logBox = $('#dbg-log');
-  const bar = $('#dbg-bar');
+  const logBox = $('#ob-log');
+  const bar = $('#ob-bar');
   const barFill = bar.firstElementChild;
-  const runBtn = $('#dbg-run');
-  const cancelBtn = $('#dbg-cancel');
+  const runBtn = $('#ob-run');
+  const cancelBtn = $('#ob-cancel');
 
   function log(msg, level) {
     const line = document.createElement('div');
@@ -521,29 +610,30 @@
   runBtn.addEventListener('click', async () => {
     cancelled = false;
     logBox.innerHTML = '';
-    const start = parseMessageLink($('#dbg-start').value);
-    const end = parseMessageLink($('#dbg-end').value);
+    const start = parseMessageLink($('#ob-start').value);
+    const end = parseMessageLink($('#ob-end').value);
 
     if (!start || !end) return log('Both message links must look like https://discord.com/channels/.../.../...', 'err');
     if (start.channelId !== end.channelId) return log('Start and end messages are in different channels.', 'err');
 
     let startId = start.messageId, endId = end.messageId;
     if (cmpSnowflake(startId, endId) > 0) {
-      [startId, endId] = [endId, startId]; // auto-swap if pasted out of order
+      [startId, endId] = [endId, startId];
       log('Start was newer than end — swapped them for you.', 'warn');
     }
 
     const token = getToken();
     if (!token) return log('Could not read your Discord token. Reload Discord and try again.', 'err');
-    if (!gmRequest && $('#dbg-img').checked) {
-      log('GM_xmlhttpRequest unavailable — install via Tampermonkey to download images. Continuing with links only.', 'warn');
+
+    const includeImages = $('#ob-img').checked;
+    if (includeImages && !gmRequest) {
+      log('No GM.xmlHttpRequest — will try direct fetch for images (may fail on some CDNs).', 'warn');
     }
 
     const opts = {
-      requestDelay: Math.max(300, parseInt($('#dbg-delay').value, 10) || 1200),
-      imageDelay: Math.max(0, parseInt($('#dbg-imgdelay').value, 10) || 400),
+      requestDelay: Math.max(300, parseInt($('#ob-delay').value, 10) || 1200),
+      imageDelay: Math.max(0, parseInt($('#ob-imgdelay').value, 10) || 400),
     };
-    const includeImages = $('#dbg-img').checked && !!gmRequest;
 
     runBtn.disabled = true;
     cancelBtn.style.display = 'block';
@@ -551,7 +641,7 @@
     barFill.style.width = '0';
 
     try {
-      log(`Fetching messages between ${startId} and ${endId}…`);
+      log(`Consulting the archives between ${startId} and ${endId}…`);
       const messages = await fetchRange(
         { token, channelId: start.channelId, startId, endId },
         opts, log,
@@ -571,12 +661,11 @@
       };
       const { markdown, images } = buildTranscript(messages, meta);
 
-      const zip = new JSZip();
-      zip.file('debate-log.md', markdown);
+      const zipFiles = [{ name: 'debate-log.md', data: new TextEncoder().encode(markdown) }];
 
       if (includeImages && images.length) {
         log(`Downloading ${images.length} images…`);
-        await downloadImages(images, zip, opts, log,
+        await downloadImages(images, zipFiles, opts, log,
           (done, total) => { barFill.style.width = (45 + (done / total) * 45) + '%'; },
           () => cancelled
         );
@@ -584,19 +673,19 @@
         log(`${images.length} images left as links (download disabled).`);
       }
 
-      log('Zipping…');
+      log('Sealing the scroll (zipping)…');
       barFill.style.width = '95%';
-      const blob = await zip.generateAsync({ type: 'blob' });
+      const blob = createZip(zipFiles);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `debate-${start.channelId}-${Date.now()}.zip`;
+      a.download = `oracle-bot-${start.channelId}-${Date.now()}.zip`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
       barFill.style.width = '100%';
-      log('Done! ZIP downloaded.');
+      log('The Oracle has spoken. ZIP downloaded.');
     } catch (e) {
       log('Error: ' + e.message, 'err');
     } finally {
