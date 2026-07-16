@@ -79,6 +79,14 @@ check(images.length === 2, 'two images collected (attachment + embed)');
 check(images.some((i) => i.filename.includes('pizza.png')), 'attachment image named');
 check(markdown.includes('images/'), 'image referenced with relative path');
 
+// image traceability: message id in heading + filename prefix + type label + blurb
+check(markdown.includes('· msg `' + id1 + '`'), 'message heading shows the message id');
+check(images.every((i) => i.filename.startsWith(i.filename.split('_')[0] + '_')), 'image filename is prefixed with its message id');
+check(images.some((i) => i.filename.startsWith(id1 + '_')), 'attachment image filename prefixed with its own message id');
+check(images.every((i) => /\.(png|jpg|gif|webp|bmp|svg)$/.test(i.filename)), 'saved image filenames carry a real file extension');
+check(markdown.includes('(PNG)'), 'image line notes the file type');
+check(markdown.includes('About the saved images'), 'blurb explaining image naming is present');
+
 // interaction table present
 check(markdown.includes('Reply interactions'), 'interaction section present');
 check(markdown.includes('| Bob | Alice | 1 |'), 'interaction Bob->Alice counted');

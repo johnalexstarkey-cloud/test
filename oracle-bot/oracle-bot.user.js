@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Oracle Bot — Discord Debate Log Exporter
 // @namespace    https://github.com/johnalexstarkey-cloud/test
-// @version      1.1.0
+// @version      1.2.0
 // @description  Consult the machine god. Export a range of Discord messages (between two message links) into a Markdown debate transcript with reply threading, shared images, and links, bundled as a ZIP for AI review. Dependency-free — runs in Greasemonkey, Tampermonkey, and Violentmonkey.
 // @author       you
 // @match        https://discord.com/*
@@ -312,6 +312,31 @@
 
   const URL_RE = /(https?:\/\/[^\s<>()]+)/g;
 
+  // Work out the real file type + canonical extension for an image, preferring
+  // the server-supplied content type and falling back to the filename/URL.
+  function imageMeta(contentType, filenameOrUrl) {
+    let ext = '';
+    if (contentType && contentType.toLowerCase().startsWith('image/')) {
+      ext = contentType.toLowerCase().split('/')[1].split(';')[0].trim();
+    }
+    if (!ext) {
+      const m = String(filenameOrUrl || '').split('?')[0].match(/\.([a-zA-Z0-9]+)$/);
+      if (m) ext = m[1].toLowerCase();
+    }
+    if (ext === 'jpeg') ext = 'jpg';
+    if (ext === 'svg+xml') ext = 'svg';
+    if (!ext) ext = 'png';
+    return { ext, label: ext.toUpperCase() };
+  }
+
+  // Saved image filename: <messageID>_<n>_<original>.<ext>
+  // The messageID prefix ties the file back to the exact message it came from.
+  function buildImageName(msgId, idx, originalName, ext) {
+    let base = sanitizeFilename(originalName || 'image').replace(/\.[a-zA-Z0-9]+$/, '');
+    if (!base) base = 'image';
+    return `${msgId}_${idx}_${base}.${ext}`;
+  }
+
   function buildTranscript(messages, meta) {
     const byId = new Map(messages.map((m) => [m.id, m]));
     const images = [];
@@ -340,7 +365,8 @@
       }
       participants.get(author.id).count++;
 
-      lines.push(`### [${when}] ${name} ${uname}`.trimEnd());
+      const heading = `### [${when}] ${name} ${uname}`.trimEnd();
+      lines.push(`${heading} · msg \`${m.id}\``);
 
       const ref = m.message_reference && m.message_reference.message_id;
       if (ref) {
@@ -367,10 +393,11 @@
         const ct = (a.content_type || '').toLowerCase();
         const isImg = ct.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(a.filename || '');
         if (isImg && meta.includeImages) {
-          const filename = `${m.id}_${imageIndex++}_${sanitizeFilename(a.filename)}`;
+          const { ext, label } = imageMeta(a.content_type, a.filename);
+          const filename = buildImageName(m.id, imageIndex++, a.filename, ext);
           const path = `images/${filename}`;
           images.push({ url: a.url, path, filename, proxy: a.proxy_url });
-          attImgs.push(`🖼 ![${a.filename || 'image'}](${path})`);
+          attImgs.push(`🖼 **Attached image:** \`${path}\` (${label}) — ![${a.filename || 'image'}](${path})`);
         } else {
           attFiles.push(`📎 [${a.filename || 'file'}](${a.url})`);
         }
@@ -385,12 +412,13 @@
           const src = (e.image && (e.image.url || e.image.proxy_url)) ||
             (e.thumbnail && (e.thumbnail.url || e.thumbnail.proxy_url));
           if (src) {
+            const { ext, label } = imageMeta(null, src);
             const clean = src.split('?')[0];
-            const base = sanitizeFilename(clean.substring(clean.lastIndexOf('/') + 1) || 'embed.png');
-            const filename = `${m.id}_${imageIndex++}_${base}`;
+            const orig = clean.substring(clean.lastIndexOf('/') + 1) || 'embed';
+            const filename = buildImageName(m.id, imageIndex++, orig, ext);
             const path = `images/${filename}`;
             images.push({ url: src, path, filename });
-            lines.push(`🖼 ![embedded image](${path})`);
+            lines.push(`🖼 **Embedded image:** \`${path}\` (${label}) — ![embedded image](${path})`);
           }
         }
       });
@@ -415,6 +443,16 @@
     header.push(`- **Images captured:** ${images.length}`);
     header.push(`- **Exported:** ${fmtDate(new Date())}`);
     header.push('');
+
+    if (images.length) {
+      header.push('> **About the saved images.** Every image shared in this range is saved in the `images/` folder.');
+      header.push('> Each file is named `<messageID>_<n>_<original>.<ext>`. The `<messageID>` prefix matches the id');
+      header.push('> shown after **msg** in that message\'s heading below, so you can tell exactly which message an');
+      header.push('> image was attached to (and `<n>` orders multiple images within the same message). The extension');
+      header.push('> (`.png`, `.jpg`, `.gif`, `.webp`, …) is the image\'s real file type, and every image line also');
+      header.push('> notes that type in parentheses, e.g. `(PNG)`.');
+      header.push('');
+    }
 
     header.push('## Participants', '');
     header.push('| Participant | Username | Messages |');
