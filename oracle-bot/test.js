@@ -86,6 +86,31 @@ check(images.some((i) => i.filename.startsWith(id1 + '_')), 'attachment image fi
 check(images.every((i) => /\.(png|jpg|gif|webp|bmp|svg)$/.test(i.filename)), 'saved image filenames carry a real file extension');
 check(markdown.includes('(PNG)'), 'image line notes the file type');
 check(markdown.includes('About the saved images'), 'blurb explaining image naming is present');
+check(!markdown.includes('About spoilers'), 'spoiler note omitted when there are no spoilers');
+
+// --- spoilers -----------------------------------------------------------------
+const spoilerMsgs = [
+  {
+    id: id1, type: 0, author: alice, timestamp: '2026-01-01T12:00:00.000Z',
+    content: 'My real point is ||hidden behind a spoiler|| here.',
+    attachments: [{ url: 'https://cdn.discordapp.com/a/x?ex=1', filename: 'SPOILER_receipt.png', content_type: 'image/png', flags: 4 }],
+    embeds: [], mentions: [],
+  },
+  {
+    id: id2, type: 0, author: bob, timestamp: '2026-01-01T12:05:00.000Z',
+    content: 'Plain rebuttal.',
+    attachments: [{ url: 'https://cdn.discordapp.com/a/y?ex=1', filename: 'chart.png', content_type: 'image/png' }],
+    embeds: [], mentions: [],
+  },
+];
+const sp = lib.buildTranscript(spoilerMsgs, meta);
+check(sp.markdown.includes('||hidden behind a spoiler||'), 'spoilered text is preserved verbatim');
+check(sp.markdown.includes('Attached image (spoiler)'), 'spoilered image is labelled as a spoiler');
+check(sp.markdown.includes('About spoilers'), 'spoiler explanation note appears when spoilers exist');
+check(sp.images.length === 2 && sp.images[0].spoiler === true && sp.images[1].spoiler === false,
+  'spoiler flag set only on the spoilered image');
+check(sp.images[0].filename.includes('SPOILER_receipt.png'), 'spoiler filename prefix preserved in saved name');
+check(sp.markdown.split('Attached image (spoiler)').length === 2, 'non-spoiler image not mislabelled');
 
 // interaction table present
 check(markdown.includes('Reply interactions'), 'interaction section present');

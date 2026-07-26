@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Oracle Bot — Discord Debate Log Exporter
 // @namespace    https://github.com/johnalexstarkey-cloud/test
-// @version      1.2.0
+// @version      1.3.0
 // @description  Consult the machine god. Export a range of Discord messages (between two message links) into a Markdown debate transcript with reply threading, shared images, and links, bundled as a ZIP for AI review. Dependency-free — runs in Greasemonkey, Tampermonkey, and Violentmonkey.
 // @author       you
 // @match        https://discord.com/*
@@ -329,6 +329,15 @@
     return { ext, label: ext.toUpperCase() };
   }
 
+  // Discord marks a spoilered attachment two ways: the IS_SPOILER flag (1 << 2)
+  // and a SPOILER_ filename prefix. Either one counts.
+  const SPOILER_TEXT_RE = /\|\|[\s\S]+?\|\|/;
+  function isSpoilerAttachment(a) {
+    if (!a) return false;
+    if (typeof a.flags === 'number' && (a.flags & 4) !== 0) return true;
+    return /^SPOILER_/i.test(a.filename || '');
+  }
+
   // Saved image filename: <messageID>_<n>_<original>.<ext>
   // The messageID prefix ties the file back to the exact message it came from.
   function buildImageName(msgId, idx, originalName, ext) {
@@ -343,6 +352,8 @@
     const participants = new Map();
     const interactions = new Map();
     let imageIndex = 0;
+    let hasSpoilerText = false;
+    let spoilerImageCount = 0;
 
     const kept = messages.filter((m) => {
       const type = m.type;
@@ -382,6 +393,7 @@
       }
 
       const body = cleanContent(m);
+      if (SPOILER_TEXT_RE.test(body)) hasSpoilerText = true;
       if (body) lines.push('', body, '');
       else lines.push('');
 
@@ -392,14 +404,18 @@
       (m.attachments || []).forEach((a) => {
         const ct = (a.content_type || '').toLowerCase();
         const isImg = ct.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(a.filename || '');
+        const spoiler = isSpoilerAttachment(a);
         if (isImg && meta.includeImages) {
           const { ext, label } = imageMeta(a.content_type, a.filename);
           const filename = buildImageName(m.id, imageIndex++, a.filename, ext);
           const path = `images/${filename}`;
-          images.push({ url: a.url, path, filename, proxy: a.proxy_url });
-          attImgs.push(`🖼 **Attached image:** \`${path}\` (${label}) — ![${a.filename || 'image'}](${path})`);
+          if (spoiler) spoilerImageCount++;
+          images.push({ url: a.url, path, filename, proxy: a.proxy_url, spoiler });
+          const kind = spoiler ? 'Attached image (spoiler)' : 'Attached image';
+          attImgs.push(`🖼 **${kind}:** \`${path}\` (${label}) — ![${a.filename || 'image'}](${path})`);
         } else {
-          attFiles.push(`📎 [${a.filename || 'file'}](${a.url})`);
+          const kind = spoiler ? 'file (spoiler)' : 'file';
+          attFiles.push(`📎 ${spoiler ? '**(spoiler)** ' : ''}[${a.filename || kind}](${a.url})`);
         }
       });
       attImgs.forEach((l) => lines.push(l));
@@ -451,6 +467,14 @@
       header.push('> image was attached to (and `<n>` orders multiple images within the same message). The extension');
       header.push('> (`.png`, `.jpg`, `.gif`, `.webp`, …) is the image\'s real file type, and every image line also');
       header.push('> notes that type in parentheses, e.g. `(PNG)`.');
+      header.push('');
+    }
+
+    if (hasSpoilerText || spoilerImageCount) {
+      header.push('> **About spoilers.** Content hidden behind Discord spoilers is included in full — hiding is');
+      header.push('> only a display effect, so nothing is missing from this transcript. Spoilered text appears');
+      header.push('> wrapped in `||double pipes||`, and spoilered attachments are labelled `(spoiler)` (their saved');
+      header.push('> filenames also keep Discord\'s `SPOILER_` prefix). Treat that content as part of the debate.');
       header.push('');
     }
 
