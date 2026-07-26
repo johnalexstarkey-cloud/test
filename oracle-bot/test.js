@@ -120,6 +120,49 @@ check(markdown.includes('| Bob | Alice | 1 |'), 'interaction Bob->Alice counted'
 check(markdown.includes('content-bearing: 3'), 'system message excluded from content-bearing count');
 check(markdown.includes('**Messages in range:** 4'), 'all 4 messages counted in range');
 
+// --- reactions & message metadata ---------------------------------------------
+check(lib.formatEmoji({ id: null, name: '🔥' }) === '🔥', 'unicode emoji rendered as-is');
+check(lib.formatEmoji({ id: '123', name: 'pepe' }) === ':pepe:', 'custom emoji rendered as :name:');
+check(lib.reactionKey({ id: '123', name: 'pepe' }) === 'pepe%3A123', 'custom emoji key is name:id, url-encoded');
+check(lib.reactionKey({ id: null, name: '🔥' }) === encodeURIComponent('🔥'), 'unicode emoji key url-encoded');
+check(lib.reactionCount({ count_details: { normal: 2, burst: 1 } }) === 3, 'count falls back to count_details');
+
+const reactMsgs = [
+  {
+    id: id1, type: 0, author: alice, timestamp: '2026-01-01T12:00:00.000Z',
+    edited_timestamp: '2026-01-01T12:02:00.000Z', pinned: true,
+    content: 'Opening argument.', attachments: [], embeds: [], mentions: [],
+    reactions: [
+      { emoji: { id: null, name: '🔥' }, count: 3 },
+      { emoji: { id: '77', name: 'based' }, count: 2, reactors: ['Bob', 'Carol'] },
+      { emoji: { id: null, name: '💀' }, count: 0 },
+    ],
+  },
+  {
+    id: id2, type: 0, author: bob, timestamp: '2026-01-01T12:05:00.000Z',
+    content: 'Rebuttal.', attachments: [], embeds: [], mentions: [],
+  },
+];
+const rx = lib.buildTranscript(reactMsgs, { ...meta, withReactors: true });
+check(rx.markdown.includes('🔥 ×3'), 'reaction emoji and count rendered');
+check(rx.markdown.includes(':based: ×2 (Bob, Carol)'), 'reactor names rendered when available');
+check(!rx.markdown.includes('💀'), 'zero-count reaction omitted');
+check(rx.markdown.includes('**Reactions:** 5 across the range'), 'total reaction count in header');
+check(rx.markdown.includes('| Alice | @alice | 1 | 5 |'), 'participants table shows reactions received');
+check(rx.markdown.includes('| Bob | @bob | 1 | 0 |'), 'participant with no reactions shows 0');
+check(rx.markdown.includes('✏️ edited'), 'edited message marked with edit time');
+check(rx.markdown.includes('📌 pinned'), 'pinned message marked');
+check(rx.markdown.includes('**Edited messages:** 1'), 'edited count in header');
+check(rx.markdown.includes('About reactions'), 'reactions note present');
+check(rx.markdown.includes('Names in parentheses'), 'reactor note reflects withReactors=true');
+
+const rxNoWho = lib.buildTranscript(reactMsgs, { ...meta, withReactors: false });
+check(rxNoWho.markdown.includes('Only counts were captured'), 'note reflects counts-only mode');
+
+// no reactions at all -> no reactions column or note
+check(!markdown.includes('About reactions'), 'reactions note omitted when there are none');
+check(markdown.includes('| Participant | Username | Messages |'), 'participants table stays 3-column without reactions');
+
 // --- ZIP writer ---------------------------------------------------------------
 const enc = new TextEncoder();
 check(lib.crc32(enc.encode('123456789')) === 0xcbf43926, 'crc32 matches known test vector');

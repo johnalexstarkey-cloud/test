@@ -10,6 +10,9 @@ It records:
 - **Who replied to whom** (Discord reply threading) — both inline and as a summary table
 - **Every image** shared in the range (downloaded into the ZIP, so the archive doesn't rot when Discord's CDN links expire)
 - **Every link** shared
+- **Reactions** on each message (emoji + count, and optionally *who* reacted), plus a per-participant "reactions received" tally
+- **Edited** and **pinned** markers on messages
+- **Spoilered** content, included in full and labelled as spoilers
 - A **participant table** and a **reply-interaction table** so a judge can see engagement at a glance
 
 **Dependency-free** — no external libraries, so it behaves identically in Greasemonkey,
@@ -71,6 +74,7 @@ wrong order, Oracle Bot swaps them for you.
 | Fetch delay | 1200 ms | Pause between each page of 100 messages. Raise it for a very large range or if you're cautious about rate limits. |
 | Image delay | 400 ms | Pause between image downloads. |
 | Download shared images | on | Off = images are left as links only (smaller ZIP, faster). |
+| Fetch *who* reacted | off | Reaction **counts** are always captured for free. Turning this on also records the names of the people who reacted — but it costs **one extra request per reaction**, so it's much slower on a busy channel. Leave it off unless who-reacted matters to your review. |
 
 ## Rate limiting
 
@@ -123,5 +127,6 @@ node oracle-bot/test.js
 - **Token:** read from Discord's own webpack modules (`webpackChunkdiscord_app` → `getToken()`) via `unsafeWindow`, with a localStorage fallback. Sent as the `Authorization` header, exactly like the Discord client.
 - **Range fetch:** paginates `GET /api/v10/channels/{id}/messages?limit=100&after={id}`. Starts at `startId − 1` (so the start message is included), sorts each batch oldest→newest by snowflake, keeps messages with `id ≤ endId`, and stops once it passes the end message or hits the end of the channel.
 - **Reply threading:** from `message_reference.message_id`, resolved against the fetched set (or the inlined `referenced_message`).
+- **Reactions:** counts come free on the message object (`reactions[]`). Reactor *names* are not included there, so the opt-in fetches `GET /messages/{id}/reactions/{emoji}` once per emoji per reacted message (custom emoji keyed as `name:id`), paced and rate-limited like the main fetch. Capped at the first 100 reactors per emoji, with `…` appended if there were more.
 - **Images:** attachment images and pasted-image embeds are downloaded via `GM.xmlHttpRequest`/`GM_xmlhttpRequest` (bypasses CDN CORS), with a plain-`fetch` fallback; other attachments and embeds are kept as links.
 - **Packaging:** a built-in store-only ZIP writer (CRC-32 + local headers + central directory) bundles the Markdown and images into one download — no third-party library.

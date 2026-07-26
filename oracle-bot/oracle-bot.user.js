@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Oracle Bot — Discord Debate Log Exporter
 // @namespace    https://github.com/johnalexstarkey-cloud/test
-// @version      1.3.0
+// @version      1.4.0
 // @description  Consult the machine god. Export a range of Discord messages (between two message links) into a Markdown debate transcript with reply threading, shared images, and links, bundled as a ZIP for AI review. Dependency-free — runs in Greasemonkey, Tampermonkey, and Violentmonkey.
 // @author       you
 // @match        https://discord.com/*
@@ -285,6 +285,66 @@
   }
 
   // ----------------------------------------------------------------------------
+  // Optional: fetch WHO reacted. Costs one request per emoji per reacted message,
+  // so this is opt-in and paced exactly like the message fetch.
+  // ----------------------------------------------------------------------------
+  async function fetchReactors({ token, channelId }, messages, opts, log, onProgress, shouldStop) {
+    const jobs = [];
+    for (const m of messages) {
+      for (const r of m.reactions || []) {
+        if (reactionCount(r) > 0) jobs.push({ m, r });
+      }
+    }
+    if (!jobs.length) return 0;
+
+    log(`Fetching reactor names for ${jobs.length} reaction(s) — this adds ${jobs.length} requests.`);
+    let baseDelay = opts.requestDelay;
+    let filled = 0;
+
+    for (let i = 0; i < jobs.length; i++) {
+      if (shouldStop()) throw new Error('Cancelled by user.');
+      const { m, r } = jobs[i];
+      const url =
+        `https://discord.com/api/v10/channels/${channelId}/messages/${m.id}` +
+        `/reactions/${reactionKey(r.emoji)}?limit=100`;
+
+      let resp;
+      try {
+        resp = await fetch(url, { headers: { Authorization: token }, credentials: 'include' });
+      } catch (e) {
+        log(`Network error on reactors, skipping: ${e.message}`, 'warn');
+        continue;
+      }
+
+      if (resp.status === 429) {
+        let body = {};
+        try { body = await resp.json(); } catch (_) {}
+        const wait = Math.ceil((body.retry_after ? body.retry_after * 1000 : baseDelay) + 600);
+        baseDelay = Math.min(baseDelay * 1.5, 10000);
+        log(`Rate limited on reactors — waiting ${(wait / 1000).toFixed(1)}s.`, 'warn');
+        await sleep(wait);
+        i--; // retry this one
+        continue;
+      }
+      if (!resp.ok) { log(`Could not read reactors (HTTP ${resp.status}), skipping.`, 'warn'); continue; }
+
+      try {
+        const users = await resp.json();
+        if (Array.isArray(users)) {
+          r.reactors = users.map((u) => displayName(u));
+          if (users.length === 100) r.reactors.push('…');
+          filled++;
+        }
+      } catch (_) {}
+
+      onProgress(i + 1, jobs.length);
+      await sleep(baseDelay);
+    }
+    log(`Reactor names captured for ${filled}/${jobs.length} reaction(s).`);
+    return filled;
+  }
+
+  // ----------------------------------------------------------------------------
   // Turn raw messages into a Markdown transcript + collect images/links.
   // ----------------------------------------------------------------------------
   function cleanContent(msg) {
@@ -338,6 +398,28 @@
     return /^SPOILER_/i.test(a.filename || '');
   }
 
+  // Reactions -------------------------------------------------------------------
+  // A message's `reactions` array carries the emoji and a count, but never the
+  // reactors — those need a separate request per emoji (see fetchReactors).
+  function formatEmoji(emoji) {
+    if (!emoji) return '?';
+    return emoji.id ? `:${emoji.name}:` : (emoji.name || '?');
+  }
+
+  // Path segment for /messages/{id}/reactions/{emoji}: custom emoji are name:id.
+  function reactionKey(emoji) {
+    if (!emoji) return '';
+    return encodeURIComponent(emoji.id ? `${emoji.name}:${emoji.id}` : emoji.name);
+  }
+
+  function reactionCount(r) {
+    if (typeof r.count === 'number') return r.count;
+    if (r.count_details) {
+      return (r.count_details.normal || 0) + (r.count_details.burst || 0);
+    }
+    return 0;
+  }
+
   // Saved image filename: <messageID>_<n>_<original>.<ext>
   // The messageID prefix ties the file back to the exact message it came from.
   function buildImageName(msgId, idx, originalName, ext) {
@@ -354,6 +436,9 @@
     let imageIndex = 0;
     let hasSpoilerText = false;
     let spoilerImageCount = 0;
+    let totalReactions = 0;
+    let editedCount = 0;
+    const reactionsByAuthor = new Map(); // author id -> total reactions received
 
     const kept = messages.filter((m) => {
       const type = m.type;
@@ -377,7 +462,13 @@
       participants.get(author.id).count++;
 
       const heading = `### [${when}] ${name} ${uname}`.trimEnd();
-      lines.push(`${heading} · msg \`${m.id}\``);
+      const marks = [];
+      if (m.edited_timestamp) {
+        editedCount++;
+        marks.push(`✏️ edited ${fmtDate(new Date(m.edited_timestamp))}`);
+      }
+      if (m.pinned) marks.push('📌 pinned');
+      lines.push(`${heading} · msg \`${m.id}\`${marks.length ? ' · ' + marks.join(' · ') : ''}`);
 
       const ref = m.message_reference && m.message_reference.message_id;
       if (ref) {
@@ -446,6 +537,20 @@
       embedLinks.forEach((l) => links.add(l));
       if (links.size) [...links].forEach((l) => lines.push(`🔗 ${l}`));
 
+      // Reactions: emoji + count, plus reactor names when they were fetched.
+      const reactions = (m.reactions || []).filter((r) => reactionCount(r) > 0);
+      if (reactions.length) {
+        const parts = reactions.map((r) => {
+          const count = reactionCount(r);
+          totalReactions += count;
+          const who = r.reactors && r.reactors.length ? ` (${r.reactors.join(', ')})` : '';
+          return `${formatEmoji(r.emoji)} ×${count}${who}`;
+        });
+        const received = reactions.reduce((sum, r) => sum + reactionCount(r), 0);
+        reactionsByAuthor.set(author.id, (reactionsByAuthor.get(author.id) || 0) + received);
+        lines.push(`⭐ **Reactions:** ${parts.join(' · ')}`);
+      }
+
       lines.push('', '---', '');
     }
 
@@ -457,8 +562,25 @@
     header.push(`- **Range:** ${meta.rangeStart} → ${meta.rangeEnd}`);
     header.push(`- **Messages in range:** ${messages.length} (content-bearing: ${kept.length})`);
     header.push(`- **Images captured:** ${images.length}`);
+    if (totalReactions) header.push(`- **Reactions:** ${totalReactions} across the range`);
+    if (editedCount) header.push(`- **Edited messages:** ${editedCount}`);
     header.push(`- **Exported:** ${fmtDate(new Date())}`);
     header.push('');
+
+    if (totalReactions) {
+      header.push('> **About reactions.** Each message lists the emoji reactions it received as');
+      header.push('> `⭐ **Reactions:** 🔥 ×3`. Reactions are a rough crowd signal, not a verdict —');
+      header.push('> weigh them alongside argument quality rather than counting them as votes.' +
+        (meta.withReactors
+          ? ' Names in parentheses are the people who reacted.'
+          : ' Only counts were captured, not who reacted.'));
+      header.push('');
+    }
+    if (editedCount) {
+      header.push('> **About edits.** Messages edited after posting are marked ✏️ with the edit time.');
+      header.push('> Only the final text is available — Discord does not expose edit history.');
+      header.push('');
+    }
 
     if (images.length) {
       header.push('> **About the saved images.** Every image shared in this range is saved in the `images/` folder.');
@@ -479,11 +601,20 @@
     }
 
     header.push('## Participants', '');
-    header.push('| Participant | Username | Messages |');
-    header.push('|---|---|---|');
-    [...participants.values()]
-      .sort((a, b) => b.count - a.count)
-      .forEach((p) => header.push(`| ${p.name} | ${p.username} | ${p.count} |`));
+    if (totalReactions) {
+      header.push('| Participant | Username | Messages | Reactions received |');
+      header.push('|---|---|---|---|');
+      [...participants.entries()]
+        .sort((a, b) => b[1].count - a[1].count)
+        .forEach(([id, p]) =>
+          header.push(`| ${p.name} | ${p.username} | ${p.count} | ${reactionsByAuthor.get(id) || 0} |`));
+    } else {
+      header.push('| Participant | Username | Messages |');
+      header.push('|---|---|---|');
+      [...participants.values()]
+        .sort((a, b) => b.count - a.count)
+        .forEach((p) => header.push(`| ${p.name} | ${p.username} | ${p.count} |`));
+    }
     header.push('');
 
     if (interactions.size) {
@@ -570,7 +701,7 @@
     module.exports = {
       cmpSnowflake, snowflakeToDate, fmtDate, sanitizeFilename,
       parseMessageLink, cleanContent, displayName, snippet, buildTranscript,
-      crc32, createZip,
+      crc32, createZip, formatEmoji, reactionKey, reactionCount,
     };
   }
 
@@ -639,6 +770,7 @@
       </div>
     </div>
     <label class="chk"><input id="ob-img" type="checkbox" checked> Download shared images into the ZIP</label>
+    <label class="chk"><input id="ob-reactors" type="checkbox"> Also fetch <i>who</i> reacted (slower — 1 request per reaction)</label>
     <button id="ob-run">Consult the Oracle → ZIP</button>
     <button id="ob-cancel">Cancel</button>
     <div id="ob-bar"><div></div></div>
@@ -711,13 +843,26 @@
         () => cancelled
       );
       if (!messages.length) { log('No messages found in that range.', 'warn'); return; }
-      log(`Got ${messages.length} messages. Building transcript…`);
+      log(`Got ${messages.length} messages.`);
+      barFill.style.width = '40%';
+
+      const withReactors = $('#ob-reactors').checked;
+      if (withReactors) {
+        await fetchReactors(
+          { token, channelId: start.channelId }, messages, opts, log,
+          (done, total) => { barFill.style.width = (40 + (done / total) * 15) + '%'; },
+          () => cancelled
+        );
+      }
+
+      log('Building transcript…');
       barFill.style.width = '45%';
 
       const meta = {
         channelId: start.channelId,
         guildId: start.guildId,
         includeImages,
+        withReactors,
         rangeStart: fmtDate(new Date(messages[0].timestamp)),
         rangeEnd: fmtDate(new Date(messages[messages.length - 1].timestamp)),
       };
