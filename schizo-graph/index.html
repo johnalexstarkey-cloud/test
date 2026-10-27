@@ -1,0 +1,1333 @@
+<title>The Graph Knows</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Permanent+Marker&family=Source+Sans+3:wght@600;700&display=swap">
+<style>
+  /* Layout: the graph is a full-bleed evidence board; the HUD is pinned to its corners like case tags */
+  :root {
+    --ink: #15171c;
+    --void: #060709;
+    --hull: #23262e;
+    --hull-hot: #30232a;
+    --node: #f1f2f5;
+    --label: #eceef3;
+    --cluster: #8b909c;
+    --edge: rgba(190, 197, 212, 0.2);
+    --dash: rgba(190, 197, 212, 0.15);
+    --strong: rgba(236, 239, 246, 0.82);
+    --bridge: #8d98f2;
+    --string: #e3342b;
+    --scrawl: #ff4b3e;
+    --hud: #9ea4b1;
+    --hud-dim: #636978;
+    --line: rgba(255, 255, 255, 0.26);
+    --panel: rgba(15, 17, 22, 0.86);
+    --font-label: "Source Sans 3", "Source Sans Pro", "Segoe UI", system-ui, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    --font-scrawl: "Permanent Marker", "Marker Felt", "Comic Sans MS", cursive;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    background: var(--ink);
+    color: var(--hud);
+    font-family: var(--font-mono);
+    overflow: hidden;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  #board {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+    display: block; cursor: crosshair; touch-action: none;
+  }
+  #board.over { cursor: pointer; }
+
+  .top {
+    position: fixed; top: 0; left: 0;
+    padding-top: calc(14px + env(safe-area-inset-top, 0px));
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    display: flex; flex-direction: column; gap: 8px;
+    pointer-events: none;
+  }
+  h1 {
+    margin: 0;
+    font-family: var(--font-scrawl); font-weight: 400;
+    font-size: clamp(24px, 3vw, 34px); line-height: 1;
+    color: var(--scrawl);
+    transform: rotate(-2.5deg); transform-origin: left center;
+    text-shadow: 0 2px 0 var(--void);
+  }
+  .rec {
+    margin: 0; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center;
+    font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+    font-variant-numeric: tabular-nums;
+  }
+  .rec .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--string); animation: rec 1.2s steps(2, jump-none) infinite; }
+  .rec .meta { color: var(--hud-dim); }
+  @keyframes rec { 50% { opacity: 0.15; } }
+
+  .log {
+    position: fixed; top: 0; right: 0;
+    padding-top: calc(14px + env(safe-area-inset-top, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    width: min(400px, 38vw);
+    display: flex; flex-direction: column; gap: 1px;
+    font-size: 11px; line-height: 1.45;
+    pointer-events: none;
+  }
+  .log p { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--hud); }
+  .log p .t { color: var(--hud-dim); }
+  .log p.warn { color: var(--scrawl); }
+  .log p:nth-child(n+3) { opacity: 0.7; }
+  .log p:nth-child(n+5) { opacity: 0.42; }
+  .log p:nth-child(n+7) { opacity: 0.2; }
+
+  .bottom {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    display: flex; justify-content: space-between; align-items: flex-end; gap: 12px;
+    pointer-events: none;
+  }
+  .unrec {
+    margin: 0; font-family: var(--font-label); font-weight: 600; font-size: 13px;
+    color: var(--cluster); white-space: nowrap;
+  }
+  .unrec.hot { color: var(--scrawl); }
+  .controls {
+    pointer-events: auto;
+    display: flex; align-items: center; gap: 10px 16px;
+    padding: 10px 12px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 3px;
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  }
+  .controls label {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+  }
+  .controls output { color: var(--label); min-width: 3ch; text-align: right; font-variant-numeric: tabular-nums; }
+  #paranoia { width: 150px; accent-color: var(--string); }
+  .mood { font-family: var(--font-scrawl); font-size: 15px; color: var(--scrawl); min-width: 16ch; }
+  .btns { display: flex; gap: 8px; }
+  button {
+    font: 600 11px var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--label); background: transparent;
+    border: 1px solid var(--line); border-radius: 3px;
+    padding: 8px 11px; cursor: pointer; white-space: nowrap;
+  }
+  button:hover { border-color: var(--string); }
+  button.primary { background: var(--string); border-color: var(--string); color: var(--node); }
+  button.primary:hover { background: var(--scrawl); }
+  button:focus-visible, #paranoia:focus-visible { outline: 2px solid var(--scrawl); outline-offset: 2px; }
+
+  @media (max-width: 760px) {
+    .log {
+      left: 0; right: 0; width: auto;
+      top: calc(96px + env(safe-area-inset-top, 0px)); padding-top: 0;
+      padding-left: max(16px, env(safe-area-inset-left, 0px));
+      font-size: 10px;
+    }
+    .log p:nth-child(n+4) { display: none; }
+    .bottom { flex-direction: column; align-items: stretch; gap: 8px; }
+    .controls { display: grid; grid-template-columns: auto minmax(0, 1fr); }
+    #paranoia { width: 100%; }
+    .mood, .btns { grid-column: 1 / -1; }
+    .btns button { flex: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rec .dot { animation: none; }
+  }
+</style>
+
+<canvas id="board" role="img" aria-label="Animated network map of eight online friend groups, redrawn as a conspiracy board with red string, scribbled notes and watching eyes"></canvas>
+
+<header class="top">
+  <h1>The Graph Knows</h1>
+  <p class="rec"><span class="dot" aria-hidden="true"></span><span>Rec</span><span id="clock">00:00:00</span><span class="meta" id="meta"></span></p>
+</header>
+
+<div class="log" id="log" aria-hidden="true"></div>
+
+<footer class="bottom" id="bottom">
+  <p class="unrec" id="unrec">No recorded ties (5)</p>
+  <div class="controls">
+    <label for="paranoia">Paranoia <output id="pval" for="paranoia">62</output></label>
+    <input type="range" id="paranoia" min="0" max="100" value="62">
+    <span class="mood" id="mood">it's all connected</span>
+    <div class="btns">
+      <button type="button" id="connect" class="primary">Connect the dots</button>
+      <button type="button" id="sound" aria-pressed="false">Sound off</button>
+    </div>
+  </div>
+</footer>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---------- helpers ----------
+  const TAU = Math.PI * 2;
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+  const rand = Math.random;
+  const R = (a, b) => a + rand() * (b - a);
+  const pick = (a) => a[(rand() * a.length) | 0];
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  function mulberry32(a) {
+    return () => {
+      a |= 0; a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const srand = mulberry32(0x3333);
+
+  const css = getComputedStyle(document.documentElement);
+  const tok = (k) => css.getPropertyValue(k).trim();
+  const COL = {
+    bg: tok('--ink'), void: tok('--void'), hull: tok('--hull'), hullHot: tok('--hull-hot'),
+    node: tok('--node'), label: tok('--label'), cluster: tok('--cluster'),
+    edge: tok('--edge'), dash: tok('--dash'), strong: tok('--strong'),
+    bridge: tok('--bridge'), string: tok('--string'), scrawl: tok('--scrawl'),
+    hud: tok('--hud'), panel: tok('--panel'),
+  };
+  const F_LABEL = tok('--font-label'), F_MONO = tok('--font-mono'), F_SCRAWL = tok('--font-scrawl');
+  const rgba = (hex, a) => {
+    const h = hex.replace('#', '');
+    return `rgba(${parseInt(h.slice(0, 2), 16)},${parseInt(h.slice(2, 4), 16)},${parseInt(h.slice(4, 6), 16)},${a})`;
+  };
+
+  // ---------- the graph, as recorded ----------
+  const CLUSTERS = [
+    { key: 'seminar', name: 'THE SEMINAR', lx: 573, ly: 161, alt: ['THE SEMINAR IS LISTENING', 'THE SEMINAR NEVER ADJOURNS', 'SEMINAR = SEMAPHORE?'] },
+    { key: 'duel', name: 'THE EPISTEMOLOGY DUEL', lx: 920, ly: 94, alt: ['BUT HOW DO YOU KNOW', 'THE DUEL WAS STAGED'] },
+    { key: 'salon', name: "JERE'S SALON", lx: 1199, ly: 55, alt: ["JERE'S SALON (A FRONT)", 'WHO IS JERE REALLY'] },
+    { key: 'bit', name: 'THE BIT CREW', lx: 1663, ly: 236, alt: ['IT WAS NEVER A BIT', 'THE BIT IS LOAD-BEARING'] },
+    { key: 'axiom', name: 'THE AXIOM CORNER', lx: 197, ly: 1028, alt: ['THEY CORNERED THE AXIOMS', 'AXIOMS ARE JUST ASSUMPTIONS'] },
+    { key: 'brawl', name: 'THE POLITICS BRAWL', lx: 582, ly: 1146, alt: ['THE BRAWL IS SCRIPTED', 'BOTH SIDES ARE ONE SIDE'] },
+    { key: 'free', name: 'FREE AGENTS', lx: 957, ly: 1096, alt: ['NOBODY IS FREE', '"FREE" AGENTS'] },
+    { key: 'builders', name: 'THE BUILDERS', lx: 1360, ly: 1096, alt: ['WHAT ARE THEY BUILDING', 'DO NOT ASK THE BUILDERS'] },
+  ];
+  // [name, x, y, radius, label side: r | l | t | b]
+  const PEOPLE = {
+    seminar: [['Rem', 371, 275, 7], ['Charlie', 581, 298, 8], ['Olang', 657, 322, 6], ['Jambe', 541, 380, 9], ['Woolier', 562, 439, 9, 't'],
+      ['vannak', 642, 405, 9, 'b'], ['Harpo', 732, 405, 7], ['Gloomies', 359, 426, 6], ['synth.wav', 621, 457, 9], ['Youv', 534, 490, 13],
+      ['hpaigecr', 641, 503, 15, 'b'], ['Hugh', 698, 490, 21], ['Awesomebillf…', 566, 548, 6, 'l'], ['Rn!', 481, 563, 6, 'b'], ['Ixtlimal', 580, 613, 6]],
+    duel: [['mentanje', 938, 167, 7], ['Zone', 883, 230, 8, 'l'], ['SuperVillainy', 938, 249, 14]],
+    salon: [['BryGonKissTh…', 1163, 128, 6], ['Taliban Chud…', 1273, 168, 6, 'l'], ['saint.', 1315, 260, 7], ['xayori', 1207, 281, 7], ['Puck', 1247, 316, 8],
+      ['bardiel', 1158, 312, 11, 'b'], ['Jere', 1100, 336, 18, 't'], ['Dot', 1207, 366, 14], ['aura', 1137, 403, 16]],
+    bit: [['b. rodent', 1665, 372, 7], ['Water.BLUE', 1761, 413, 6, 'l'], ['resputin', 1845, 412, 6], ['Jack', 1525, 462, 12], ['February2084', 1596, 490, 11, 'l'],
+      ['Digleb', 1725, 467, 6], ['El Don', 1761, 518, 6, 'l'], ['My Name', 1540, 563, 17, 'l'], ['FenceJumper', 1642, 558, 8], ['OkPhilosopher', 1448, 591, 11, 'l'],
+      ['BigC', 1713, 594, 7], ['Zack', 1554, 683, 11], ['mohanid', 1641, 690, 5, 'b'], ['Meliorne', 1720, 692, 8]],
+    axiom: [['timebag', 195, 715, 7], ['Simon', 221, 769, 11], ['Bedbug', 189, 825, 8], ['Jeh', 292, 841, 8], ['n. qualia', 248, 972, 7]],
+    brawl: [['Ape', 637, 766, 13], ['Angel', 646, 843, 16, 'l'], ['boss', 709, 828, 11], ['Comte', 502, 836, 7, 'l'], ['Nikkolas Mical', 531, 934, 6, 'l'], ['lizzie', 545, 1031, 7]],
+    free: [['Willow', 940, 750, 7, 'l'], ['A. Johnson', 1022, 772, 9], ['Stackhouse', 975, 844, 12], ['Pearl', 884, 1041, 6]],
+    builders: [['Brutus', 1300, 783, 18, 'l'], ['Janne', 1372, 794, 11], ['papagaio', 1252, 866, 13, 'l'], ['thunderstud', 1312, 866, 14, 'b'], ['Neura', 1447, 881, 9, 't'], ['ovcharr', 1391, 1041, 6]],
+  };
+  // unnamed members
+  const DOTS = {
+    seminar: [[565, 234], [512, 271], [474, 345], [439, 453], [487, 430], [478, 497], [431, 518], [644, 553], [697, 561], [745, 526], [753, 462], [685, 432], [606, 348]],
+    duel: [],
+    salon: [[1343, 182], [1378, 232], [1219, 229], [1166, 217], [1097, 226], [1057, 268], [1121, 272], [1059, 322], [1293, 348], [1261, 402], [1182, 438]],
+    bit: [[1671, 310], [1730, 342], [1533, 385], [1575, 418], [1640, 440], [1480, 430], [1665, 495], [1495, 527], [1588, 545], [1618, 608], [1570, 620],
+      [1517, 612], [1451, 647], [1823, 526], [1935, 456], [1926, 576], [1911, 627], [1777, 655], [1789, 716], [1731, 752]],
+    axiom: [[128, 788], [68, 815], [237, 882]],
+    brawl: [[579, 800], [600, 895], [658, 918], [482, 1027], [515, 1091], [590, 1071]],
+    free: [[913, 867], [951, 920], [1011, 900]],
+    builders: [[1274, 820], [1362, 838], [1238, 925], [1273, 962], [1337, 955], [1452, 957], [1513, 888], [1509, 950], [1415, 850]],
+  };
+  const STRONG = [
+    ['Hugh', 'hpaigecr'], ['Hugh', 'synth.wav'], ['Hugh', 'Harpo'], ['Hugh', 'vannak'], ['Hugh', 'Olang'], ['hpaigecr', 'Youv'], ['hpaigecr', 'Woolier'],
+    ['hpaigecr', 'vannak'], ['Youv', 'Woolier'], ['Youv', 'Jambe'], ['Youv', 'Awesomebillf…'],
+    ['Zone', 'SuperVillainy'], ['mentanje', 'SuperVillainy'],
+    ['Jere', 'bardiel'], ['Jere', 'Dot'], ['Jere', 'aura'], ['bardiel', 'aura'], ['bardiel', 'Dot'], ['Dot', 'aura'], ['Dot', 'Puck'], ['Dot', 'saint.'],
+    ['Puck', 'saint.'], ['bardiel', 'xayori'],
+    ['Jack', 'My Name'], ['February2084', 'My Name'], ['February2084', 'Jack'], ['February2084', 'b. rodent'], ['My Name', 'OkPhilosopher'], ['My Name', 'Zack'],
+    ['Jack', 'OkPhilosopher'],
+    ['timebag', 'Simon'], ['Simon', 'Bedbug'], ['Simon', 'Jeh'],
+    ['Ape', 'Angel'], ['Angel', 'boss'],
+    ['Stackhouse', 'A. Johnson'],
+    ['Brutus', 'Janne'], ['Brutus', 'papagaio'], ['Brutus', 'thunderstud'], ['papagaio', 'thunderstud'], ['Janne', 'thunderstud'], ['Janne', 'Neura'],
+  ];
+  // [a, b, bend, badge, thick]
+  const BRIDGES = [
+    ['Rem', 'Zone', -0.13, 0, 0], ['Charlie', 'Jere', 0.03, 0, 1], ['Dot', 'FenceJumper', -0.04, 3, 1], ['saint.', 'FenceJumper', 0.05, 3, 1],
+    ['Rn!', 'timebag', 0.1, 3, 1], ['mentanje', 'Willow', 0.02, 0, 0], ['Hugh', 'aura', -0.06, 0, 0], ['Nikkolas Mical', 'aura', 0.05, 0, 0],
+    ['Rem', 'hpaigecr', 0.04, 0, 0], ['Hugh', 'Ixtlimal', 0.05, 0, 0], ['Hugh', 'Brutus', -0.03, 0, 0], ['Bedbug', 'Stackhouse', 0.1, 0, 0],
+    ['n. qualia', 'thunderstud', 0.13, 0, 0], ['lizzie', 'My Name', -0.05, 0, 0], ['Jere', 'Digleb', -0.05, 0, 0], ['Jere', 'El Don', -0.03, 0, 0],
+    ['Jack', 'FenceJumper', 0.1, 0, 0],
+  ];
+
+  // ---------- build ----------
+  const nodes = [], byName = new Map(), clusters = [];
+  function addNode(name, x, y, r, side, cl) {
+    const n = {
+      i: nodes.length, name, x, y, hx: x, hy: y, vx: 0, vy: 0, r, side, cl, tiny: !name, deg: 0,
+      ph: [R(0, TAU), R(0, TAU), R(0, TAU), R(0, TAU)], fr: [R(0.25, 0.6), R(0.25, 0.6)],
+      flash: 0, gUntil: 0, gNext: 0, gStr: '', redact: 0, swap: null, blinkAt: R(1, 6), blinkStart: -9,
+    };
+    nodes.push(n); cl.members.push(n);
+    if (name) byName.set(name, n);
+  }
+  CLUSTERS.forEach((c, ci) => {
+    const cl = { ...c, i: ci, members: [], disp: c.name, ren: null, scrNext: 0, cx: 0, cy: 0, cx0: 0, cy0: 0, rad: 0 };
+    clusters.push(cl);
+    for (const [name, x, y, r, side] of PEOPLE[c.key]) addNode(name, x, y, r, side || 'r', cl);
+    for (const [x, y] of DOTS[c.key]) addNode('', x, y, 4, 'r', cl);
+  });
+  for (const cl of clusters) {
+    for (const n of cl.members) { cl.cx0 += n.hx; cl.cy0 += n.hy; }
+    cl.cx0 /= cl.members.length; cl.cy0 /= cl.members.length;
+    cl.cx = cl.cx0; cl.cy = cl.cy0;
+    for (const n of cl.members) cl.rad = Math.max(cl.rad, Math.hypot(n.hx - cl.cx0, n.hy - cl.cy0));
+  }
+  const named = nodes.filter((n) => !n.tiny);
+  const tinies = nodes.filter((n) => n.tiny);
+
+  const edges = [], edgeKeys = new Set(), nodeEdges = nodes.map(() => []), adj = nodes.map(() => []);
+  function addEdge(a, b, kind, bend = 0, badge = 0, thick = 0) {
+    if (!a || !b || a === b) return null;
+    const k = a.i < b.i ? a.i + '-' + b.i : b.i + '-' + a.i;
+    if (edgeKeys.has(k)) return null;
+    edgeKeys.add(k);
+    const e = { a, b, kind, bend, badge, thick, ph: R(0, TAU), wf: R(0.2, 0.7), cx: 0, cy: 0, bTxt: badge ? String(badge) : '', bUntil: 0 };
+    edges.push(e);
+    nodeEdges[a.i].push(e); nodeEdges[b.i].push(e);
+    adj[a.i].push(b); adj[b.i].push(a);
+    a.deg++; b.deg++;
+    return e;
+  }
+  const N = (name) => byName.get(name);
+  for (const [a, b, bend, badge, thick] of BRIDGES) addEdge(N(a), N(b), 'bridge', bend, badge, thick);
+  for (const [a, b] of STRONG) addEdge(N(a), N(b), 'strong', (srand() - 0.5) * 0.12);
+  // the grey web between the hubs
+  const hubs = named.filter((n) => n.r >= 9);
+  for (let i = 0; i < hubs.length; i++) {
+    for (let j = i + 1; j < hubs.length; j++) {
+      if (hubs[i].cl !== hubs[j].cl && srand() < 0.2) addEdge(hubs[i], hubs[j], 'gray', (srand() - 0.5) * 0.4);
+    }
+  }
+  for (const n of named) {
+    if (srand() < 0.55) {
+      const others = named.filter((m) => m.cl !== n.cl);
+      addEdge(n, others[(srand() * others.length) | 0], 'dash', (srand() - 0.5) * 0.3);
+    }
+    if (!nodeEdges[n.i].some((e) => e.kind === 'strong')) {
+      let best = null, bd = 1e9;
+      for (const m of n.cl.members) if (m !== n && m.r >= 9) { const d = dist(n, m); if (d < bd) { bd = d; best = m; } }
+      addEdge(n, best, 'gray', (srand() - 0.5) * 0.2);
+    }
+  }
+  for (const t of tinies) {
+    const pool = t.cl.members.filter((m) => !m.tiny).sort((a, b) => dist(t, a) - dist(t, b));
+    addEdge(t, pool[0], 'tiny', (srand() - 0.5) * 0.15);
+    if (srand() < 0.5) {
+      const hub = pool.slice().sort((a, b) => b.r - a.r)[0];
+      addEdge(t, hub, 'tiny', (srand() - 0.5) * 0.2);
+    }
+  }
+  const E = { tiny: [], dash: [], gray: [], strong: [], bridgeThin: [], bridgeThick: [], bridge: [] };
+  for (const e of edges) {
+    if (e.kind === 'bridge') { E.bridge.push(e); (e.thick ? E.bridgeThick : E.bridgeThin).push(e); } else E[e.kind].push(e);
+  }
+  const pulseEdges = edges.filter((e) => e.kind !== 'tiny');
+  const loud = edges.filter((e) => e.kind === 'strong' || e.kind === 'bridge');
+  const weighted = [];
+  for (const n of named) for (let k = 0; k < n.deg; k++) weighted.push(n);
+  const pickNamed = () => pick(named);
+  const pickHub = () => pick(weighted);
+  const dn = (n) => n.name || '[unnamed]';
+
+  function bfs(a, b) {
+    const prev = new Map([[a, null]]), q = [a];
+    while (q.length) {
+      const n = q.shift();
+      if (n === b) break;
+      for (const m of adj[n.i]) if (!prev.has(m)) { prev.set(m, n); q.push(m); }
+    }
+    if (!prev.has(b)) return null;
+    const path = [];
+    for (let n = b; n; n = prev.get(n)) path.unshift(n);
+    return path;
+  }
+
+  // ---------- state ----------
+  const cv = document.getElementById('board');
+  const ctx = cv.getContext('2d');
+  const buf = document.createElement('canvas');
+  const bctx = buf.getContext('2d');
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const slider = document.getElementById('paranoia');
+  const pval = document.getElementById('pval');
+  const moodEl = document.getElementById('mood');
+  const logEl = document.getElementById('log');
+  const unrecEl = document.getElementById('unrec');
+  const clockEl = document.getElementById('clock');
+  const metaEl = document.getElementById('meta');
+  const bottomEl = document.getElementById('bottom');
+  const topEl = document.querySelector('.top');
+  const soundBtn = document.getElementById('sound');
+
+  if (reduced) slider.value = 10;
+  let Ptarget = slider.value / 100, P = Ptarget;
+  let T = 0, last = performance.now() / 1000;
+  let nextEvt = 2.2, nextLog = 0.4, pulseAcc = 0, unrecNext = 7, unrecUntil = 0, nextBeat = 0, gaze = null, gazeNext = 0;
+  let hover = null, hoverStart = 0, hoverQuip = '', hoverEdges = [];
+  let tear = null;
+  const pulses = [], strings = [], scrawls = [], phantoms = [], threes = [];
+  const active = { inter: null, conv: null, spot: null };
+
+  let vw = 0, vh = 0, dpr = 1, base = 1, narrow = false, availTop = 0, availBottom = 0, S = 1;
+  let M = [1, 0, 0, 1, 0, 0];
+  const cam = { x: 1000, y: 592, z: 1, rot: 0, userZ: 1, manX: 1000, manY: 592, manUntil: -1, shake: 0 };
+  const mouse = { sx: 0, sy: 0, x: -9999, y: -9999, in: false, down: false, dragged: false, px: 0, py: 0, ox: 0, oy: 0, seen: false, touchOff: 0 };
+
+  // ---------- canvases for fx ----------
+  const scan = document.createElement('canvas'); scan.width = 1; scan.height = 3;
+  { const s = scan.getContext('2d'); s.fillStyle = rgba(COL.void, 0.55); s.fillRect(0, 0, 1, 1); }
+  const scanPat = ctx.createPattern(scan, 'repeat');
+  const grains = [0, 1, 2].map(() => {
+    const g = document.createElement('canvas'); g.width = g.height = 160;
+    const gx = g.getContext('2d'), img = gx.createImageData(160, 160);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = rand() < 0.5 ? 0 : 255;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v; img.data[i + 3] = rand() * 70;
+    }
+    gx.putImageData(img, 0, 0);
+    return ctx.createPattern(g, 'repeat');
+  });
+  let vignette = null;
+
+  function resize() {
+    vw = innerWidth; vh = innerHeight; dpr = Math.min(2, window.devicePixelRatio || 1);
+    cv.width = buf.width = Math.round(vw * dpr);
+    cv.height = buf.height = Math.round(vh * dpr);
+    narrow = vw < 760;
+    availBottom = bottomEl.offsetHeight;
+    logEl.style.top = narrow ? `${topEl.offsetHeight + 4}px` : '';
+    availTop = narrow ? topEl.offsetHeight + 50 : 0;
+    const availH = Math.max(120, vh - availTop - availBottom);
+    const contain = Math.min(vw / 1960, availH / 1180) * 0.98;
+    base = narrow ? Math.max(contain, Math.min(vw / 1020, availH / 1180)) : contain;
+    vignette = ctx.createRadialGradient(vw / 2, vh / 2, Math.min(vw, vh) * 0.32, vw / 2, vh / 2, Math.max(vw, vh) * 0.78);
+    vignette.addColorStop(0, rgba(COL.void, 0));
+    vignette.addColorStop(1, rgba(COL.void, 0.62));
+  }
+  window.addEventListener('resize', resize);
+
+  function setCam() {
+    S = base * cam.z;
+    const co = Math.cos(cam.rot) * S, si = Math.sin(cam.rot) * S;
+    const ox = (rand() - 0.5) * cam.shake, oy = (rand() - 0.5) * cam.shake;
+    const cy = (availTop + vh - availBottom) / 2;
+    M = [co, si, -si, co, vw / 2 - (co * cam.x - si * cam.y) + ox, cy - (si * cam.x + co * cam.y) + oy];
+  }
+  const toScreen = (x, y) => [M[0] * x + M[2] * y + M[4], M[1] * x + M[3] * y + M[5]];
+  function toWorld(sx, sy) {
+    const x = sx - M[4], y = sy - M[5], s2 = S * S;
+    return [(M[3] * x - M[2] * y) / s2, (-M[1] * x + M[0] * y) / s2];
+  }
+
+  // ---------- text glitching ----------
+  const GLYPHS = '▓▒░█#@$%&?!<>/\\|01ΔΣΞ¿';
+  const zalgo = () => { let z = ''; for (let i = 0, k = 1 + ((rand() * 3) | 0); i < k; i++) z += String.fromCharCode(0x300 + ((rand() * 0x6f) | 0)); return z; };
+  function scramble(s, amt) {
+    let o = '';
+    for (const ch of s) o += rand() < amt ? (rand() < 0.2 ? ch + zalgo() : GLYPHS[(rand() * GLYPHS.length) | 0]) : ch;
+    return o;
+  }
+  const QUIPS = ["who's asking", 'stop looking', 'not me', 'I see you too', 'look away', 'you again?'];
+  function labelText(n) {
+    let base = n.swap && n.swap.until > T ? n.swap.name : n.name;
+    if (n === hover && P > 0.4 && T - hoverStart > 1) base = hoverQuip;
+    if (n.gUntil > T) {
+      if (T > n.gNext) { n.gStr = scramble(base, 0.3 + 0.45 * P); n.gNext = T + R(0.05, 0.12); }
+      return n.gStr;
+    }
+    return base;
+  }
+
+  // ---------- notes in red marker ----------
+  const SPECIAL = {
+    'Brutus': 'et tu?', 'My Name': 'My Name is not a name', 'February2084': '2084 is a DATE', 'Pearl': 'Pearl has no ties. suspicious',
+    'Willow': 'Willow sees everything', 'Hugh': 'why is Hugh so big', 'Jere': 'the salon is a front', 'Zone': 'Zone = the zone?',
+    'mentanje': 'mentanje started the duel', 'SuperVillainy': 'too obvious', 'Rn!': 'Rn! = RIGHT NOW', 'boss': 'boss of what',
+    'Angel': 'no angel', 'thunderstud': 'storm coming', 'aura': 'aura farming', 'Dot': 'connect the Dot', 'saint.': 'no saint',
+    'FenceJumper': 'which fence??', 'OkPhilosopher': 'ok, philosopher', 'Simon': 'Simon says', 'n. qualia': 'what is it like to be n. qualia',
+    'Neura': 'neural link?', 'Stackhouse': 'house of cards', 'BigC': 'Big C = ?', 'Digleb': 'dig deeper', 'timebag': 'time is in the bag',
+    'Comte': 'positively involved', 'lizzie': 'lizzie knows', 'Charlie': 'Charlie was there', 'Jack': 'Jack of all cells',
+  };
+  const NODE_NOTES = ['THIS ONE', 'watch this one', 'who??', '3 accounts', 'bot?', 'same IP?', 'too quiet', '???', 'always online',
+    'never sleeps', 'alt account', 'follows everyone', 'deleted 40 posts', 'knows too much', 'mod?', 'changed pfp 3x'];
+  function threadNote(path) {
+    const A = dn(path[0]), B = dn(path[path.length - 1]);
+    const specials = path.filter((n) => SPECIAL[n.name]);
+    if (specials.length && rand() < 0.5) return SPECIAL[pick(specials).name];
+    return pick([`${A} → ${B}??`, 'COINCIDENCE?', 'not a coincidence', 'FOLLOW THE 3s', `${A} knew`, `${A} = ${B}?`, 'it goes deeper',
+      'they ALL know', 'same person??', 'check the timestamps', 'THIS IS THE LINK', `ask ${B}`, 'connected!!', 'look closer', 'why always 3',
+      'one group chat', 'they planned this', `${path.length - 1} hops. of course`]);
+  }
+  function addScrawl(text, n, o = {}) {
+    let dx = o.dx, dy = o.dy;
+    if (dx === undefined) {
+      const ang = Math.atan2(n.hy - 600, n.hx - 1000) + R(-0.7, 0.7);
+      const d = R(70, 115);
+      dx = Math.cos(ang) * d; dy = Math.sin(ang) * d;
+      const tx = clamp(n.hx + dx, 110, 1890), ty = clamp(n.hy + dy, 60, 1130);
+      dx = tx - n.hx; dy = ty - n.hy;
+    }
+    scrawls.push({ text, n, dx, dy, rot: o.rot ?? R(-0.12, 0.12), size: o.size || 26, born: T + (o.delay || 0), life: o.life || 3.4,
+      circle: !!o.circle, arrow: !!o.arrow, seed: R(0, TAU) });
+    if (scrawls.length > 24) scrawls.shift();
+  }
+
+  // ---------- log ----------
+  const pad = (v, k = 2) => String(v).padStart(k, '0');
+  function stamp() { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`; }
+  function log(msg, warn) {
+    const p = document.createElement('p');
+    if (warn) p.className = 'warn';
+    const t = document.createElement('span'); t.className = 't'; t.textContent = stamp() + '  ';
+    p.append(t, document.createTextNode(msg));
+    logEl.prepend(p);
+    while (logEl.children.length > 8) logEl.lastChild.remove();
+    sfx('blip');
+  }
+  const CALM_LOGS = [
+    () => { const e = pick(E.strong); return `tie ${dn(e.a)}–${dn(e.b)} active`; },
+    () => { const n = pickNamed(); return `${n.name} degree=${n.deg}`; },
+    () => `sync ok · ${edges.length} ties · ${nodes.length} members`,
+  ];
+  const LOGS = [
+    () => { const e = pick(E.bridge); return `intercept ${dn(e.a)} ↔ ${dn(e.b)} :: ${e.badge || 1 + ((rand() * 4) | 0)} shared threads`; },
+    () => { const n = pickHub(); return `${n.name} degree=${n.deg} (+${1 + ((rand() * 3) | 0)}) ▲`; },
+    () => { const e = pick(E.strong); return `tie ${dn(e.a)}–${dn(e.b)} flagged for review`; },
+    () => `ping ${pickNamed().name} … no reply`,
+    () => { const a = pickNamed(), b = pickNamed(); return `${a.name} & ${b.name} posted ${(rand() * 900) | 0}ms apart`; },
+    () => { const c = pick(clusters); return `${c.name.toLowerCase()}: ${c.members.length} members, ${c.members.filter((n) => n.tiny).length} unnamed`; },
+    () => { const a = pickNamed(), b = pickNamed(); return `hash(${a.name}) ≈ hash(${b.name})`; },
+    () => (mouse.seen ? `observer at ${mouse.x | 0},${mouse.y | 0}. logging.` : 'no observer detected. suspicious.'),
+    () => `${pickNamed().name} went quiet at 03:${pad((rand() * 60) | 0)}`,
+    () => `unnamed member #${pick(tinies).i} pinged ${pickHub().name}`,
+  ];
+  function addLog() {
+    if (P < 0.15) log(pick(CALM_LOGS)());
+    else log(pick(LOGS)(), P > 0.6 && rand() < 0.3);
+  }
+
+  // ---------- events ----------
+  function evString(from, forced) {
+    const A = from || pickHub();
+    let B = A, C = A;
+    for (let k = 0; k < 40 && (B === A || B.cl === A.cl || dist(A, B) < 450); k++) B = pickNamed();
+    for (let k = 0; k < 40 && (C.cl === A.cl || C.cl === B.cl); k++) C = pickNamed();
+    const p1 = bfs(A, C), p2 = bfs(C, B);
+    const raw = p1 && p2 ? p1.concat(p2.slice(1)) : [A, C, B];
+    const seen = new Set(), path = [];
+    for (const n of raw) {
+      if (seen.has(n)) { while (path[path.length - 1] !== n) seen.delete(path.pop()); continue; }
+      seen.add(n); path.push(n);
+    }
+    const lay = 0.32 * path.length + 0.4;
+    strings.push({ path, born: T, lay, life: lay + 4.5, persist: forced || rand() < 0.55 });
+    const kept = strings.filter((s) => s.persist);
+    if (kept.length > 12) strings.splice(strings.indexOf(kept[0]), 1);
+    for (let i = strings.length - 1; i >= 0; i--) if (!strings[i].persist && T - strings[i].born > strings[i].life + 1.5) strings.splice(i, 1);
+    addScrawl(threadNote(path), path[Math.floor(path.length / 2)], { delay: lay * 0.8, life: 3.8, size: 28 });
+    log(`thread ${path.map((n) => n.name || '•').join(' → ')}`, P > 0.55);
+    sfx('string');
+    if (!reduced) cam.shake = Math.max(cam.shake, 3 + 4 * P);
+  }
+  function evNote() {
+    const n = rand() < 0.7 ? pickHub() : pickNamed();
+    addScrawl(SPECIAL[n.name] && rand() < 0.45 ? SPECIAL[n.name] : pick(NODE_NOTES), n, { circle: true, arrow: true, life: 3.2 });
+  }
+  function evRename() {
+    const cl = pick(clusters.filter((c) => !c.ren));
+    if (!cl) return;
+    cl.ren = { target: pick(cl.alt), born: T, hold: R(2.8, 4.2) };
+    log(`hull "${cl.name}" relabelled by unknown`, true);
+  }
+  function evPhantom() {
+    const k = 3 + ((rand() * 5) | 0);
+    for (let i = 0; i < k; i++) {
+      const a = pick(nodes), b = pick(nodes);
+      if (a !== b) phantoms.push({ a, b, kind: 'phantom', bend: R(-0.25, 0.25), ph: R(0, TAU), wf: R(0.5, 1.5), cx: 0, cy: 0, born: T, life: R(0.8, 2), red: rand() < 0.5 });
+    }
+    log(`${k} phantom ties detected (unrecorded)`);
+  }
+  function evRedact() {
+    const k = 3 + ((rand() * 4) | 0);
+    for (let i = 0; i < k; i++) pickNamed().redact = T + R(1.5, 3.2);
+    log(`${k} subjects [REDACTED]`, true);
+  }
+  const STATUS = ['WATCHING BACK', 'UNRESOLVED', 'TOO CONNECTED', 'DO NOT ENGAGE', 'ALIAS SUSPECTED', 'CENTRAL. TOO CENTRAL'];
+  function evInspect(n) {
+    if (active.inter) return;
+    n = n || pickHub();
+    const alias = pick(named.filter((m) => m !== n));
+    const bridges = nodeEdges[n.i].filter((e) => e.kind === 'bridge').length;
+    active.inter = {
+      n, born: T, life: 4.4, id: 1000 + ((rand() * 9000) | 0),
+      lines: [
+        `SUBJECT    ${n.name || '████████'}`,
+        `CELL       ${n.cl.name}`,
+        `TIES       ${n.deg} known · ? unknown`,
+        `BRIDGES    ${bridges || 'none (that we found)'}`,
+        `ALIAS?     ${alias.name}`,
+        `LAST SEEN  03:${pad((rand() * 60) | 0)} · ██/██/2084`,
+        `STATUS     ${pick(STATUS)}`,
+      ],
+    };
+    log(`interrogating ${dn(n)}`, true);
+    sfx('static');
+  }
+  function evSwap() {
+    const a = pickNamed(); let b = pickNamed();
+    if (a === b) return;
+    const until = T + 2.4;
+    a.swap = { name: b.name, until }; b.swap = { name: a.name, until };
+    log(`identity mismatch: ${a.name} ⇄ ${b.name}`, true);
+  }
+  function evThrees() {
+    const pool = edges.filter((e) => e.kind !== 'tiny' && !e.badge);
+    const k = 4 + ((rand() * 6) | 0);
+    for (let i = 0; i < k; i++) threes.push({ e: pick(pool), born: T + i * 0.12, life: R(3, 5.5), txt: pick(['3', '3', '3', '3?', '33', 'Ⅲ', '∴', '3!']) });
+    log(`the 3s are spreading (${threes.length + 3})`, true);
+  }
+  function evGlitch() {
+    for (const n of named) { n.gUntil = T + R(0.2, 0.6); n.gNext = 0; }
+    if (!reduced) { tear = { born: T, life: 0.28, amt: 0.5 + P }; cam.shake = Math.max(cam.shake, 10 * P); }
+    sfx('static');
+  }
+  function evConverge() {
+    if (active.inter || active.conv) return;
+    const n = pickHub();
+    active.conv = { n, born: T, life: 3 };
+    addScrawl(`EVERYTHING LEADS TO ${n.name.toUpperCase()}`, n, { dx: 0, dy: -95, size: 40, life: 2.6, rot: R(-0.06, 0.06) });
+    log(`convergence on ${n.name}`, true);
+    sfx('string');
+  }
+  function evSpot() {
+    if (active.spot) return;
+    const cl = pick(clusters);
+    active.spot = { cl, born: T, life: 3.4 };
+    log(`lights out. only ${cl.name.toLowerCase()} remains`, true);
+  }
+  const EVENTS = [
+    { f: () => evString(), w: 3, p: 0.15 },
+    { f: evNote, w: 2.5, p: 0.2 },
+    { f: evRename, w: 1.4, p: 0.25 },
+    { f: evPhantom, w: 1.4, p: 0.3 },
+    { f: evRedact, w: 1.1, p: 0.3 },
+    { f: () => evInspect(), w: 1.3, p: 0.35 },
+    { f: evSwap, w: 1, p: 0.4 },
+    { f: evThrees, w: 0.8, p: 0.45 },
+    { f: evGlitch, w: 1, p: 0.4 },
+    { f: evConverge, w: 0.7, p: 0.55, motion: true },
+    { f: evSpot, w: 0.6, p: 0.6 },
+  ];
+  function fireEvent() {
+    const pool = EVENTS.filter((ev) => P >= ev.p && !(ev.motion && reduced));
+    let tot = 0;
+    for (const ev of pool) tot += ev.w;
+    let r = rand() * tot;
+    for (const ev of pool) { r -= ev.w; if (r <= 0) { ev.f(); return; } }
+  }
+
+  // ---------- pulses ----------
+  function spawnPulse(e, from, hops = 0) {
+    if (pulses.length > 150) return;
+    e = e || (rand() < 0.45 ? pick(loud) : pick(pulseEdges));
+    const dir = from ? (e.a === from ? 1 : -1) : rand() < 0.5 ? 1 : -1;
+    pulses.push({ e, t: 0, dir, sp: R(0.7, 1.3) * (0.6 + P * 1.4), hops, col: e.kind === 'bridge' ? COL.bridge : COL.node });
+  }
+
+  // ---------- update ----------
+  function updateEdges(list) {
+    const wob = 0.008 + P * P * 0.07, sp = 1 + P * 2;
+    for (const e of list) {
+      const dx = e.b.x - e.a.x, dy = e.b.y - e.a.y;
+      const bend = e.bend + Math.sin(T * e.wf * sp + e.ph) * wob;
+      e.cx = (e.a.x + e.b.x) / 2 - dy * bend;
+      e.cy = (e.a.y + e.b.y) / 2 + dx * bend;
+    }
+  }
+  const qx = (e, t) => { const u = 1 - t; return u * u * e.a.x + 2 * u * t * e.cx + t * t * e.b.x; };
+  const qy = (e, t) => { const u = 1 - t; return u * u * e.a.y + 2 * u * t * e.cy + t * t * e.b.y; };
+
+  function update(dt) {
+    const f = dt * 60;
+    P += (Ptarget - P) * Math.min(1, dt * 3);
+
+    if (P > 0.12 && T > nextEvt) { fireEvent(); nextEvt = T + R(0.6, 1.4) * lerp(8, 1.8, P); }
+    if (T > nextLog) { addLog(); nextLog = T + R(0.5, 1.5) * lerp(4, 0.75, P); }
+
+    // mouse in world space
+    if (mouse.in) { const w = toWorld(mouse.sx, mouse.sy); mouse.x = w[0]; mouse.y = w[1]; }
+    if (mouse.touchOff && T > mouse.touchOff) { mouse.in = false; mouse.touchOff = 0; }
+
+    // convergence envelope
+    let cenv = 0;
+    const conv = active.conv;
+    if (conv) {
+      const a = (T - conv.born) / conv.life;
+      if (a >= 1) active.conv = null;
+      else cenv = smooth(0, 0.25, a) * (1 - smooth(0.7, 1, a));
+    }
+
+    const amp = (2.5 + P * P * 22) * (reduced ? 0.35 : 1);
+    const spd = 0.6 + P * 1.8;
+    const damp = Math.pow(0.86, f);
+    for (const n of nodes) {
+      let tx = n.hx + (Math.sin(T * n.fr[0] * spd + n.ph[0]) * 0.65 + Math.sin(T * n.fr[1] * spd * 1.9 + n.ph[1]) * 0.35) * amp;
+      let ty = n.hy + (Math.cos(T * n.fr[1] * spd + n.ph[2]) * 0.65 + Math.sin(T * n.fr[0] * spd * 2.3 + n.ph[3]) * 0.35) * amp;
+      if (cenv && n !== conv.n) { tx += (conv.n.x - tx) * 0.5 * cenv; ty += (conv.n.y - ty) * 0.5 * cenv; }
+      let ax = (tx - n.x) * 0.045, ay = (ty - n.y) * 0.045;
+      if (mouse.in) {
+        const dx = n.x - mouse.x, dy = n.y - mouse.y, d = Math.hypot(dx, dy), rad = 170;
+        if (d < rad && d > 0.01) { const k = 1 - d / rad, fo = k * k * (0.4 + P * 3.2); ax += (dx / d) * fo; ay += (dy / d) * fo; }
+      }
+      if (!reduced && rand() < dt * P * P * 0.5) { n.vx += R(-1, 1) * 14 * P; n.vy += R(-1, 1) * 14 * P; }
+      n.vx = (n.vx + ax * f) * damp; n.vy = (n.vy + ay * f) * damp;
+      n.x += n.vx * f; n.y += n.vy * f;
+      if (n.flash > 0) n.flash = Math.max(0, n.flash - dt * 2.2);
+      if (!n.tiny && n.gUntil < T && rand() < dt * P * P * 0.06) { n.gUntil = T + R(0.15, 0.7); n.gNext = 0; }
+    }
+    for (const cl of clusters) {
+      let x = 0, y = 0;
+      for (const n of cl.members) { x += n.x; y += n.y; }
+      cl.cx = x / cl.members.length; cl.cy = y / cl.members.length;
+      updateRename(cl);
+    }
+    updateEdges(edges);
+    for (let i = phantoms.length - 1; i >= 0; i--) if (T - phantoms[i].born > phantoms[i].life) phantoms.splice(i, 1);
+    updateEdges(phantoms);
+    for (let i = threes.length - 1; i >= 0; i--) if (T - threes[i].born > threes[i].life) threes.splice(i, 1);
+    for (let i = scrawls.length - 1; i >= 0; i--) if (T - scrawls[i].born > scrawls[i].life + 0.8) scrawls.splice(i, 1);
+
+    // original badges stutter
+    if (P > 0.4) for (const e of E.bridge) {
+      if (!e.badge) continue;
+      if (e.bUntil < T && rand() < dt * P * 0.3) { e.bTxt = pick(['3?', '33', 'Ⅲ', '∴', '333', '3!']); e.bUntil = T + R(0.3, 1.1); }
+      else if (e.bUntil < T) e.bTxt = String(e.badge);
+    }
+
+    // pulses travel and cascade
+    pulseAcc += dt * (1 + P * 9);
+    while (pulseAcc > 1) { pulseAcc--; spawnPulse(); }
+    for (let i = pulses.length - 1; i >= 0; i--) {
+      const p = pulses[i];
+      p.t += (dt * p.sp * 260) / (Math.hypot(p.e.b.x - p.e.a.x, p.e.b.y - p.e.a.y) + 40);
+      if (p.t >= 1) {
+        const to = p.dir > 0 ? p.e.b : p.e.a;
+        to.flash = 1;
+        pulses.splice(i, 1);
+        if (p.hops < 6 && rand() < 0.2 + P * 0.5) {
+          const next = nodeEdges[to.i].filter((e) => e !== p.e && e.kind !== 'tiny');
+          if (next.length) spawnPulse(pick(next), to, p.hops + 1);
+        }
+      }
+    }
+
+    // where the eyes look when nobody is watching them
+    if (T > gazeNext) { gaze = pickHub(); gazeNext = T + R(1.5, 4); }
+
+    // hover
+    if (mouse.in && !mouse.down) {
+      let best = null, bd = 1e9;
+      for (const n of nodes) { const d = Math.hypot(n.x - mouse.x, n.y - mouse.y) - n.r; if (d < bd) { bd = d; best = n; } }
+      const h = bd < 10 / S + 4 ? best : null;
+      if (h !== hover) {
+        hover = h; hoverStart = T;
+        hoverQuip = h && h.name === 'My Name' ? 'Your Name' : pick(QUIPS);
+        hoverEdges = h ? nodeEdges[h.i] : [];
+        cv.classList.toggle('over', !!h);
+      }
+    } else if (hover && !mouse.in) { hover = null; hoverEdges = []; cv.classList.remove('over'); }
+
+    updateCam(dt);
+
+    if (soundOn && T > nextBeat) { sfx('beat'); setTimeout(() => sfx('beat2'), 230); nextBeat = T + lerp(1.5, 0.6, P); }
+    if (T > unrecNext && P > 0.3) {
+      unrecEl.textContent = pick(['No recorded ties (6)', 'No recorded ties (∞)', 'No recorded ties (5) that you know of', 'Recorded ties: deleted', 'No recorded ties (3)', 'No recorded ties (yours)']);
+      unrecEl.classList.add('hot');
+      unrecUntil = T + R(0.8, 1.8); unrecNext = T + R(4, 10) / (P + 0.2);
+    }
+    if (unrecUntil && T > unrecUntil) { unrecEl.textContent = 'No recorded ties (5)'; unrecEl.classList.remove('hot'); unrecUntil = 0; }
+  }
+
+  function updateRename(cl) {
+    const r = cl.ren;
+    if (!r) { cl.disp = cl.name; return; }
+    const a = T - r.born;
+    let tgt, prog;
+    if (a < 0.9) { tgt = r.target; prog = a / 0.9; }
+    else if (a < 0.9 + r.hold) { tgt = r.target; prog = 1; }
+    else if (a < 1.8 + r.hold) { tgt = cl.name; prog = (a - 0.9 - r.hold) / 0.9; }
+    else { cl.ren = null; cl.disp = cl.name; return; }
+    if (prog >= 1) { cl.disp = tgt; return; }
+    if (T < cl.scrNext) return;
+    cl.scrNext = T + 0.05;
+    let s = '';
+    for (let i = 0; i < tgt.length; i++) s += i / tgt.length < prog ? tgt[i] : tgt[i] === ' ' ? ' ' : GLYPHS[(rand() * GLYPHS.length) | 0];
+    cl.disp = s;
+  }
+
+  function updateCam(dt) {
+    const availH = vh - availTop - availBottom;
+    let tx = 1000, ty = 592, tz = 1, tr = 0;
+    if (narrow) {
+      const s = base * cam.userZ, hw = vw / 2 / s, hh = availH / 2 / s;
+      const minX = 20 + hw, maxX = 1980 - hw, minY = 20 + hh, maxY = 1165 - hh;
+      if (maxX > minX) tx = (minX + maxX) / 2 + (reduced ? 0 : Math.sin(T * 0.05) * (maxX - minX) / 2);
+      if (maxY > minY) ty = (minY + maxY) / 2 + (reduced ? 0 : Math.sin(T * 0.037) * (maxY - minY) / 2);
+    }
+    if (cam.userZ > 1.04 || T < cam.manUntil) { tx = cam.manX; ty = cam.manY; }
+    const it = active.inter, cn = active.conv;
+    if (it) { tx = it.n.x; ty = it.n.y; tz = narrow ? 1.3 : 1.75; }
+    else if (cn) { tx += (cn.n.x - tx) * 0.35; ty += (cn.n.y - ty) * 0.35; tz = 1.12; }
+    tz *= cam.userZ;
+    if (!reduced) {
+      tz *= 1 + 0.025 * P * Math.sin(T * 0.23);
+      tr = 0.014 * P * Math.sin(T * 0.11) + 0.006 * P * Math.sin(T * 0.37);
+    }
+    const k = Math.min(1, dt * (it ? 3 : 1.6));
+    cam.x += (tx - cam.x) * k; cam.y += (ty - cam.y) * k;
+    cam.z += (tz - cam.z) * k; cam.rot += (tr - cam.rot) * k;
+    cam.shake = reduced ? 0 : Math.max(0, cam.shake - dt * 30);
+  }
+
+  // ---------- draw ----------
+  function convexHull(pts) {
+    pts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const lo = [], up = [];
+    for (const p of pts) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+    for (let i = pts.length - 1; i >= 0; i--) { const p = pts[i]; while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop(); up.push(p); }
+    up.pop(); lo.pop();
+    return lo.concat(up);
+  }
+  function drawHulls() {
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 40;
+    const wob = 2 + P * 9, sp = 0.7 + P * 2.2;
+    for (const cl of clusters) {
+      const pts = [];
+      for (const n of cl.members) {
+        const padR = 24 + n.r * 0.6;
+        for (let k = 0; k < 6; k++) {
+          const a = (k * TAU) / 6 + n.ph[0];
+          const w = padR + Math.sin(T * sp + n.i * 1.7 + k) * wob;
+          pts.push([n.x + Math.cos(a) * w, n.y + Math.sin(a) * w]);
+        }
+      }
+      const h = convexHull(pts);
+      const hot = cl.ren || (active.spot && active.spot.cl === cl);
+      ctx.fillStyle = ctx.strokeStyle = hot ? COL.hullHot : COL.hull;
+      ctx.beginPath();
+      h.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+    }
+  }
+  function drawClusterLabels() {
+    const size = Math.max(15, 10 / S), track = size * 0.2;
+    ctx.font = `600 ${size}px ${F_LABEL}`;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    const jit = P > 0.3 ? (P - 0.3) * 4 : 0;
+    for (const cl of clusters) {
+      const x = cl.lx + (cl.cx - cl.cx0), y = cl.ly + (cl.cy - cl.cy0);
+      const chars = [...cl.disp], ws = chars.map((c) => ctx.measureText(c).width);
+      let w = -track;
+      for (const cw of ws) w += cw + track;
+      let cx = x - w / 2;
+      ctx.fillStyle = cl.ren ? COL.scrawl : COL.cluster;
+      chars.forEach((ch, i) => {
+        const jy = jit ? Math.sin(T * 9 + i * 1.7 + cl.i) * jit : 0;
+        ctx.fillText(ch, cx, y + jy);
+        cx += ws[i] + track;
+      });
+    }
+  }
+  function strokeBatch(list, color, w, dash, off) {
+    if (!list.length) return;
+    ctx.beginPath();
+    for (const e of list) { ctx.moveTo(e.a.x, e.a.y); ctx.quadraticCurveTo(e.cx, e.cy, e.b.x, e.b.y); }
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(w, 0.7 / S);
+    ctx.setLineDash(dash || []);
+    ctx.lineDashOffset = off || 0;
+    ctx.stroke();
+  }
+  function drawEdges() {
+    const go = (0.3 + P) * (reduced ? 0.3 : 1);
+    ctx.lineCap = 'butt';
+    strokeBatch(E.tiny, COL.dash, 1, [2, 5], (-T * 6 * go) % 70);
+    strokeBatch(E.dash, COL.dash, 1.1, [6, 6], (-T * 10 * go) % 120);
+    ctx.globalAlpha = 0.85 + 0.15 * Math.sin(T * 2.3) * P;
+    strokeBatch(E.gray, COL.edge, 1.15);
+    ctx.globalAlpha = 1;
+    strokeBatch(E.strong, COL.strong, 2.3);
+    strokeBatch(E.bridgeThin, COL.bridge, 1.6, [7, 6], (-T * 24 * go) % 130);
+    strokeBatch(E.bridgeThick, COL.bridge, 3.2, [10, 7], (-T * 30 * go) % 170);
+    if (hoverEdges.length) strokeBatch(hoverEdges, COL.node, 2.2);
+    // phantom ties flicker in and out
+    for (const ph of phantoms) {
+      const a = (T - ph.born) / ph.life;
+      ctx.globalAlpha = (0.45 + 0.35 * Math.sin(T * 40 + ph.ph)) * (1 - a);
+      strokeBatch([ph], ph.red ? COL.scrawl : COL.node, 1.2, [3, 4], -T * 40);
+    }
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
+  }
+  function drawBadge(e, txt, k) {
+    const x = qx(e, 0.5), y = qy(e, 0.5), r = 12 * k;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, TAU);
+    ctx.fillStyle = COL.bg; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = COL.bridge; ctx.stroke();
+    ctx.fillStyle = COL.bridge;
+    ctx.font = `700 ${(txt.length > 1 ? 11 : 14) * k}px ${F_LABEL}`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(txt, x, y + 0.5);
+  }
+  function drawBadges() {
+    for (const e of E.bridge) if (e.badge) drawBadge(e, e.bTxt, 1);
+    for (const th of threes) {
+      const a = T - th.born;
+      if (a < 0) continue;
+      const k = Math.min(1, a / 0.2) * (1 - smooth(th.life - 0.4, th.life, a));
+      if (k > 0.02) drawBadge(th.e, th.txt, k);
+    }
+  }
+  function drawStrings() {
+    const keep = smooth(0.04, 0.3, P);
+    ctx.lineCap = 'round';
+    for (const s of strings) {
+      const age = T - s.born;
+      const alpha = s.persist ? (age < s.life ? 1 : lerp(1, 0.3, smooth(s.life, s.life + 1, age)) * keep) : 1 - smooth(s.life, s.life + 1.2, age);
+      if (alpha < 0.01) continue;
+      const segs = s.path.length - 1, drawn = Math.min(segs, (age / s.lay) * segs);
+      for (const pass of [0, 1]) {
+        const ox = pass ? 0 : 2.5, oy = pass ? 0 : 3.5;
+        ctx.globalAlpha = alpha * (pass ? 1 : 0.35);
+        ctx.strokeStyle = pass ? COL.string : COL.void;
+        ctx.lineWidth = Math.max(2.6, 1.4 / S);
+        ctx.beginPath();
+        for (let i = 0; i < Math.ceil(drawn); i++) {
+          const a = s.path[i], b = s.path[i + 1], fr = Math.min(1, drawn - i);
+          const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 + Math.min(70, Math.hypot(b.x - a.x, b.y - a.y) * 0.12) + Math.sin(T * 1.3 + i) * 3;
+          const p1x = a.x + (mx - a.x) * fr, p1y = a.y + (my - a.y) * fr;
+          const p2x = mx + (b.x - mx) * fr, p2y = my + (b.y - my) * fr;
+          ctx.moveTo(a.x + ox, a.y + oy);
+          ctx.quadraticCurveTo(p1x + ox, p1y + oy, p1x + (p2x - p1x) * fr + ox, p1y + (p2y - p1y) * fr + oy);
+        }
+        ctx.stroke();
+      }
+      // push pins
+      const reached = Math.min(s.path.length, Math.floor(drawn) + 1);
+      for (let i = 0; i < reached; i++) {
+        const n = s.path[i], pr = Math.max(5, 3 / S);
+        ctx.globalAlpha = alpha * 0.4; ctx.fillStyle = COL.void;
+        ctx.beginPath(); ctx.arc(n.x + 2, n.y + 3, pr, 0, TAU); ctx.fill();
+        ctx.globalAlpha = alpha; ctx.fillStyle = COL.string;
+        ctx.beginPath(); ctx.arc(n.x, n.y, pr, 0, TAU); ctx.fill();
+        ctx.fillStyle = COL.node; ctx.globalAlpha = alpha * 0.7;
+        ctx.beginPath(); ctx.arc(n.x - pr * 0.3, n.y - pr * 0.3, pr * 0.32, 0, TAU); ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+  function drawPulses() {
+    const pr = Math.max(2.6, 1.6 / S);
+    for (const p of pulses) {
+      ctx.fillStyle = p.col;
+      for (let k = 3; k >= 0; k--) {
+        const t = p.t - k * 0.025;
+        if (t < 0) continue;
+        const tt = p.dir > 0 ? t : 1 - t;
+        ctx.globalAlpha = (1 - k / 4) * 0.9;
+        ctx.beginPath(); ctx.arc(qx(p.e, tt), qy(p.e, tt), pr * (1 - k * 0.17), 0, TAU); ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+  function drawReticle() {
+    const it = active.inter;
+    if (!it) return;
+    const a = T - it.born, n = it.n;
+    const rr = n.r + 20 + Math.max(0, 0.4 - a) * 160;
+    ctx.globalAlpha = Math.min(1, a / 0.2, (it.life - a) / 0.3);
+    ctx.strokeStyle = COL.scrawl; ctx.lineWidth = Math.max(1.5, 1 / S);
+    ctx.setLineDash([8, 6]); ctx.lineDashOffset = -T * 40;
+    ctx.beginPath(); ctx.arc(n.x, n.y, rr, 0, TAU); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    for (let k = 0; k < 4; k++) {
+      const ang = (k * TAU) / 4 + T * 0.4;
+      ctx.moveTo(n.x + Math.cos(ang) * (rr + 5), n.y + Math.sin(ang) * (rr + 5));
+      ctx.lineTo(n.x + Math.cos(ang) * (rr + 34), n.y + Math.sin(ang) * (rr + 34));
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  function drawNodes() {
+    const eyes = smooth(0.58, 0.74, P);
+    const look = active.inter ? active.inter.n : mouse.in ? { x: mouse.x, y: mouse.y } : gaze;
+    for (const n of nodes) {
+      if (n.tiny) {
+        ctx.beginPath(); ctx.arc(n.x, n.y, 4, 0, TAU);
+        ctx.fillStyle = COL.bg; ctx.fill();
+        ctx.lineWidth = Math.max(1.4, 0.8 / S); ctx.strokeStyle = COL.node; ctx.stroke();
+        continue;
+      }
+      const r = n.r * (1 + 0.07 * P * Math.sin(T * 3 + n.ph[0]));
+      const isEye = eyes > 0 && n.r >= 12;
+      let open = 1;
+      if (isEye) {
+        if (T > n.blinkAt) { n.blinkStart = T; n.blinkAt = T + R(2, 7); }
+        const b = T - n.blinkStart;
+        if (b < 0.16) open = Math.max(0.08, Math.abs(1 - b / 0.08));
+        open = lerp(1, open, eyes);
+      }
+      ctx.fillStyle = COL.node;
+      ctx.beginPath(); ctx.ellipse(n.x, n.y, r, r * open, 0, 0, TAU); ctx.fill();
+      if (n.flash > 0) {
+        ctx.globalAlpha = n.flash * 0.6; ctx.strokeStyle = COL.node; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(n.x, n.y, r + 4 + (1 - n.flash) * 12, 0, TAU); ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      if (hover && (n === hover || adj[hover.i].includes(n))) {
+        ctx.strokeStyle = n === hover ? COL.scrawl : COL.node; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(n.x, n.y, r + 5, 0, TAU); ctx.stroke();
+      }
+      if (isEye && look && open > 0.25) {
+        const dx = look.x - n.x, dy = look.y - n.y, d = Math.hypot(dx, dy) || 1, off = r * 0.36;
+        const px = n.x + (dx / d) * off, py = n.y + (dy / d) * off * open;
+        ctx.globalAlpha = eyes * 0.75; ctx.strokeStyle = COL.scrawl; ctx.lineWidth = Math.max(1, r * 0.08);
+        ctx.beginPath(); ctx.ellipse(px, py, r * 0.6, r * 0.6 * open, 0, 0, TAU); ctx.stroke();
+        ctx.globalAlpha = eyes; ctx.fillStyle = COL.bg;
+        ctx.beginPath(); ctx.ellipse(px, py, r * 0.42, r * 0.42 * open, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = COL.node;
+        ctx.beginPath(); ctx.arc(px - r * 0.14, py - r * 0.14 * open, r * 0.1, 0, TAU); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+  function drawLabels() {
+    const min = 10.5 / S;
+    ctx.lineJoin = 'round';
+    for (const n of nodes) {
+      if (n.tiny) continue;
+      const big = n.r >= 13;
+      const size = Math.max(big ? 17 : 14.5, min * (big ? 1.12 : 1));
+      ctx.font = `${big ? 700 : 600} ${size}px ${F_LABEL}`;
+      let x = n.x, y = n.y;
+      if (n.side === 'r') { x += n.r + 6; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; }
+      else if (n.side === 'l') { x -= n.r + 6; ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; }
+      else if (n.side === 't') { y -= n.r + 4; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; }
+      else { y += n.r + 3; ctx.textAlign = 'center'; ctx.textBaseline = 'top'; }
+      if (n.redact > T) {
+        const w = ctx.measureText(n.name).width + 6, h = size * 0.95;
+        const bx = ctx.textAlign === 'left' ? x - 3 : ctx.textAlign === 'right' ? x - w + 3 : x - w / 2;
+        const by = ctx.textBaseline === 'middle' ? y - h / 2 : ctx.textBaseline === 'bottom' ? y - h : y;
+        ctx.fillStyle = COL.label; ctx.fillRect(bx, by, w, h);
+        continue;
+      }
+      const txt = labelText(n);
+      ctx.lineWidth = Math.max(3.5, 3 / S); ctx.strokeStyle = COL.bg;
+      ctx.strokeText(txt, x, y);
+      ctx.fillStyle = (n.swap && n.swap.until > T) || (n === hover && P > 0.4 && T - hoverStart > 1) ? COL.scrawl : COL.label;
+      ctx.fillText(txt, x, y);
+    }
+  }
+  function drawScrawls() {
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (const s of scrawls) {
+      const age = T - s.born;
+      if (age < 0) continue;
+      const fade = age > s.life ? 1 - (age - s.life) / 0.8 : 1;
+      if (fade <= 0) continue;
+      const n = s.n;
+      ctx.globalAlpha = fade;
+      ctx.strokeStyle = COL.scrawl;
+      ctx.lineWidth = Math.max(2.6, 1.6 / S);
+      if (s.circle) {
+        const prog = Math.min(1, age / 0.45), end = TAU * 1.12 * prog;
+        ctx.beginPath();
+        for (let th = 0; th <= end; th += 0.12) {
+          const rr = (n.r + 15) * (1 + 0.1 * Math.sin(3 * th + s.seed)) * (1 + 0.04 * th);
+          const px = n.x + Math.cos(th + s.seed) * rr * 1.25, py = n.y + Math.sin(th + s.seed) * rr;
+          th ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+        }
+        ctx.stroke();
+      }
+      const size = Math.max(s.size, 15 / S);
+      const tx = n.x + s.dx, ty = n.y + s.dy;
+      const shown = s.text.slice(0, Math.ceil(s.text.length * Math.min(1, age / (0.035 * s.text.length + 0.2))));
+      if (s.arrow) {
+        const dx = n.x - tx, dy = n.y - ty, d = Math.hypot(dx, dy) || 1, ux = dx / d, uy = dy / d;
+        const sx = tx + ux * size * 0.7, sy = ty + uy * size * 0.7;
+        const ex = n.x - ux * (n.r + 20), ey = n.y - uy * (n.r + 20);
+        if (Math.hypot(ex - sx, ey - sy) > 12) {
+          const prog = Math.min(1, age / 0.35);
+          const fx = sx + (ex - sx) * prog, fy = sy + (ey - sy) * prog;
+          ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(fx, fy);
+          if (prog === 1) {
+            ctx.moveTo(fx, fy); ctx.lineTo(fx - ux * 12 - uy * 7, fy - uy * 12 + ux * 7);
+            ctx.moveTo(fx, fy); ctx.lineTo(fx - ux * 12 + uy * 7, fy - uy * 12 - ux * 7);
+          }
+          ctx.stroke();
+        }
+      }
+      ctx.save();
+      ctx.translate(tx, ty); ctx.rotate(s.rot);
+      ctx.font = `${size}px ${F_SCRAWL}`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = COL.void; ctx.globalAlpha = fade * 0.6;
+      ctx.fillText(shown, 2, 2.5);
+      ctx.fillStyle = COL.scrawl; ctx.globalAlpha = fade;
+      ctx.fillText(shown, 0, 0);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // screen space
+  function drawSpot() {
+    const sp = active.spot;
+    if (!sp) return;
+    const a = (T - sp.born) / sp.life;
+    if (a > 1) { active.spot = null; return; }
+    const env = smooth(0, 0.15, a) * (1 - smooth(0.8, 1, a));
+    const [sx, sy] = toScreen(sp.cl.cx, sp.cl.cy);
+    const rad = sp.cl.rad * S + 40;
+    const g = ctx.createRadialGradient(sx, sy, rad * 0.7, sx, sy, rad * 1.35);
+    g.addColorStop(0, rgba(COL.void, 0));
+    g.addColorStop(1, rgba(COL.void, 0.86 * env));
+    ctx.fillStyle = g; ctx.fillRect(0, 0, vw, vh);
+  }
+  function drawDossier() {
+    const it = active.inter;
+    if (!it) return;
+    const age = T - it.born;
+    if (age > it.life) { active.inter = null; return; }
+    const [sx, sy] = toScreen(it.n.x, it.n.y);
+    const lh = 16, w = 262, h = 30 + it.lines.length * lh;
+    let bx = sx + 64, by = sy - h / 2;
+    if (bx + w > vw - 16) bx = sx - 64 - w;
+    bx = clamp(bx, 16, Math.max(16, vw - w - 16));
+    by = clamp(by, availTop + 8, Math.max(availTop + 8, vh - availBottom - h - 8));
+    ctx.globalAlpha = Math.min(1, age / 0.2, (it.life - age) / 0.3);
+    ctx.strokeStyle = COL.scrawl; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(bx < sx ? bx + w : bx, by + h / 2); ctx.lineTo(sx, sy); ctx.stroke();
+    ctx.fillStyle = COL.panel; ctx.fillRect(bx, by, w, h);
+    ctx.strokeRect(bx + 0.5, by + 0.5, w - 1, h - 1);
+    ctx.fillStyle = COL.scrawl; ctx.fillRect(bx, by, w, 18);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = COL.bg; ctx.font = `600 10px ${F_MONO}`;
+    ctx.fillText(`SUBJECT FILE #${it.id}`, bx + 8, by + 9.5);
+    ctx.font = `400 11px ${F_MONO}`; ctx.fillStyle = COL.label;
+    let budget = Math.floor((age - 0.15) * 120);
+    it.lines.forEach((ln, i) => {
+      if (budget <= 0) return;
+      ctx.fillText(ln.slice(0, budget), bx + 8, by + 30 + i * lh);
+      budget -= ln.length;
+    });
+    ctx.globalAlpha = 1;
+  }
+  function drawFX() {
+    ctx.globalAlpha = 0.16 + P * 0.24; ctx.fillStyle = scanPat; ctx.fillRect(0, 0, vw, vh);
+    if (!reduced) {
+      const y = ((T * 70) % (vh + 240)) - 120;
+      const g = ctx.createLinearGradient(0, y - 60, 0, y + 60);
+      g.addColorStop(0, rgba(COL.node, 0)); g.addColorStop(0.5, rgba(COL.node, 0.02 + P * 0.03)); g.addColorStop(1, rgba(COL.node, 0));
+      ctx.globalAlpha = 1; ctx.fillStyle = g; ctx.fillRect(0, y - 60, vw, 120);
+    }
+    ctx.save();
+    ctx.globalAlpha = 0.05 + P * 0.1;
+    if (!reduced) ctx.translate(-((rand() * 160) | 0), -((rand() * 160) | 0));
+    ctx.fillStyle = grains[reduced ? 0 : (rand() * 3) | 0];
+    ctx.fillRect(0, 0, vw + 160, vh + 160);
+    ctx.restore();
+    ctx.globalAlpha = 1; ctx.fillStyle = vignette; ctx.fillRect(0, 0, vw, vh);
+
+    if (tear) {
+      const a = (T - tear.born) / tear.life;
+      if (a > 1) { tear = null; return; }
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      bctx.clearRect(0, 0, buf.width, buf.height);
+      bctx.drawImage(cv, 0, 0);
+      for (let k = 4 + ((rand() * 8) | 0); k > 0; k--) {
+        const h = R(4, 46) * dpr, y = rand() * (cv.height - h), dx = R(-1, 1) * 40 * dpr * tear.amt;
+        ctx.drawImage(buf, 0, y, cv.width, h, dx, y, cv.width, h);
+      }
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.14;
+      ctx.drawImage(buf, 6 * dpr * tear.amt, 0);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function draw() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = COL.bg; ctx.fillRect(0, 0, cv.width, cv.height);
+    setCam();
+    ctx.setTransform(dpr * M[0], dpr * M[1], dpr * M[2], dpr * M[3], dpr * M[4], dpr * M[5]);
+    drawHulls();
+    drawClusterLabels();
+    drawEdges();
+    drawBadges();
+    drawStrings();
+    drawPulses();
+    drawReticle();
+    drawNodes();
+    drawLabels();
+    drawScrawls();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawSpot();
+    drawDossier();
+    drawFX();
+  }
+
+  // ---------- sound ----------
+  let AC = null, master = null, noiseBuf = null, soundOn = false;
+  function initAudio() {
+    AC = new (window.AudioContext || window.webkitAudioContext)();
+    master = AC.createGain(); master.gain.value = 0; master.connect(AC.destination);
+    const lp = AC.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 260; lp.Q.value = 7; lp.connect(master);
+    [55, 55.4, 82.6, 110.3].forEach((fq, i) => {
+      const o = AC.createOscillator(); o.type = i === 3 ? 'triangle' : 'sawtooth'; o.frequency.value = fq;
+      const g = AC.createGain(); g.gain.value = i === 3 ? 0.03 : 0.05;
+      o.connect(g).connect(lp); o.start();
+    });
+    const lfo = AC.createOscillator(); lfo.frequency.value = 0.08;
+    const lg = AC.createGain(); lg.gain.value = 140;
+    lfo.connect(lg).connect(lp.frequency); lfo.start();
+    noiseBuf = AC.createBuffer(1, AC.sampleRate, AC.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  }
+  function env(g, t0, peak, a, d) {
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(peak, t0 + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + a + d);
+  }
+  function tone(type, f0, f1, peak, dur) {
+    const t = AC.currentTime, o = AC.createOscillator(), g = AC.createGain();
+    o.type = type; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    env(g, t, peak, 0.004, dur); o.connect(g).connect(master); o.start(t); o.stop(t + dur + 0.05);
+  }
+  function sfx(kind) {
+    if (!soundOn || !AC) return;
+    if (kind === 'static') {
+      const t = AC.currentTime, src = AC.createBufferSource(), bp = AC.createBiquadFilter(), g = AC.createGain();
+      src.buffer = noiseBuf; bp.type = 'bandpass'; bp.frequency.value = R(900, 3500); bp.Q.value = 0.7;
+      env(g, t, 0.22, 0.005, R(0.12, 0.3)); src.connect(bp).connect(g).connect(master);
+      src.start(t, rand() * 0.5); src.stop(t + 0.4);
+    } else if (kind === 'string') tone('triangle', 220, 140, 0.12, 0.5);
+    else if (kind === 'beat') tone('sine', 62, 38, 0.32, 0.18);
+    else if (kind === 'beat2') tone('sine', 58, 36, 0.2, 0.16);
+    else if (kind === 'blip') tone('sine', R(1400, 2600), 1200, 0.02, 0.05);
+  }
+  soundBtn.addEventListener('click', () => {
+    try {
+      if (!AC) initAudio();
+      AC.resume();
+      soundOn = !soundOn;
+      master.gain.setTargetAtTime(soundOn ? 0.55 : 0, AC.currentTime, 0.3);
+      soundBtn.textContent = soundOn ? 'Sound on' : 'Sound off';
+      soundBtn.setAttribute('aria-pressed', String(soundOn));
+    } catch (err) {
+      soundBtn.textContent = 'No sound here';
+      soundBtn.disabled = true;
+    }
+  });
+
+  // ---------- input ----------
+  const MOODS = [[0.15, "it's just a graph"], [0.35, "huh. that's odd"], [0.55, 'wait a minute'], [0.75, "it's all connected"], [0.92, "they know you're looking"], [2, "THEY KNOW YOU'RE LOOKING"]];
+  function syncSlider() {
+    Ptarget = slider.value / 100;
+    pval.textContent = slider.value;
+    moodEl.textContent = MOODS.find((m) => Ptarget < m[0])[1];
+  }
+  slider.addEventListener('input', syncSlider);
+  syncSlider();
+  document.getElementById('connect').addEventListener('click', () => evString(null, true));
+
+  cv.addEventListener('pointerdown', (ev) => {
+    mouse.down = true; mouse.dragged = false;
+    mouse.px = mouse.ox = ev.clientX; mouse.py = mouse.oy = ev.clientY;
+    mouse.sx = ev.clientX; mouse.sy = ev.clientY; mouse.in = true; mouse.seen = true; mouse.touchOff = 0;
+    cv.setPointerCapture(ev.pointerId);
+  });
+  cv.addEventListener('pointermove', (ev) => {
+    mouse.sx = ev.clientX; mouse.sy = ev.clientY;
+    if (ev.pointerType === 'mouse') { mouse.in = true; mouse.seen = true; }
+    if (!mouse.down) return;
+    if (Math.hypot(ev.clientX - mouse.ox, ev.clientY - mouse.oy) > 6) mouse.dragged = true;
+    if (mouse.dragged) {
+      cam.x -= (ev.clientX - mouse.px) / S; cam.y -= (ev.clientY - mouse.py) / S;
+      cam.x = clamp(cam.x, 0, 2000); cam.y = clamp(cam.y, 0, 1182);
+      cam.manX = cam.x; cam.manY = cam.y; cam.manUntil = T + 8;
+    }
+    mouse.px = ev.clientX; mouse.py = ev.clientY;
+  });
+  cv.addEventListener('pointerup', (ev) => {
+    mouse.down = false;
+    if (ev.pointerType !== 'mouse') mouse.touchOff = T + 1.5;
+    if (mouse.dragged) return;
+    const [wx, wy] = toWorld(ev.clientX, ev.clientY);
+    let best = null, bd = 1e9;
+    for (const n of nodes) { const d = Math.hypot(n.x - wx, n.y - wy) - n.r; if (d < bd) { bd = d; best = n; } }
+    if (best && bd < 12 / S + 4) {
+      evInspect(best);
+      if (best.name) evString(best, true);
+    } else {
+      log(`observer clicked ${wx | 0},${wy | 0}. noted.`);
+    }
+  });
+  cv.addEventListener('pointerleave', (ev) => { if (ev.pointerType === 'mouse') mouse.in = false; });
+  cv.addEventListener('wheel', (ev) => {
+    ev.preventDefault();
+    const [wx, wy] = toWorld(ev.clientX, ev.clientY);
+    const before = cam.userZ;
+    cam.userZ = clamp(cam.userZ * Math.exp(-ev.deltaY * 0.0015), 0.85, 3.5);
+    const k = 1 - before / cam.userZ;
+    if (cam.userZ <= 1.04 && T >= cam.manUntil) { cam.manX = cam.x; cam.manY = cam.y; }
+    cam.manX += (wx - cam.manX) * k; cam.manY += (wy - cam.manY) * k;
+    cam.manUntil = T + 8;
+  }, { passive: false });
+
+  // ---------- HUD ticker ----------
+  metaEl.textContent = `${named.length} named · ${tinies.length} unnamed · ${clusters.length} cells`;
+  const t0 = Date.now();
+  setInterval(() => {
+    const s = Math.floor((Date.now() - t0) / 1000);
+    clockEl.textContent = `${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
+  }, 500);
+
+  // ---------- go ----------
+  resize();
+  if (document.fonts && document.fonts.load) {
+    ['600 15px "Source Sans 3"', '700 17px "Source Sans 3"', '26px "Permanent Marker"', '11px "IBM Plex Mono"'].forEach((f) => document.fonts.load(f).catch(() => {}));
+  }
+  function frame(now) {
+    const t = now / 1000;
+    const dt = Math.min(0.05, Math.max(0, t - last));
+    last = t; T += dt;
+    update(dt);
+    draw();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
